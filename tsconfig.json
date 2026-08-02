@@ -40,5 +40,11 @@
     "noUncheckedSideEffectImports": true,
     "moduleDetection": "force",
     "skipLibCheck": true,
-  }
+
+    "plugins": [
+      {
+        "name": "@effect/language-service",
+      },
+    ],
+  },
 }

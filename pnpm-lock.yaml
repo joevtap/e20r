@@ -15,6 +15,9 @@ importers:
         specifier: 4.0.0-beta.102
         version: 4.0.0-beta.102
     devDependencies:
+      '@effect/language-service':
+        specifier: 0.87.1
+        version: 0.87.1
       '@types/node':
         specifier: 26.1.2
         version: 26.1.2
@@ -29,6 +32,10 @@ importers:
         version: 7.0.2
 
 packages:
+
+  '@effect/language-service@0.87.1':
+    resolution: {integrity: sha512-kcljlJmEgqg5mFAM6UShJYJjMqJb3TbHHxrK8Qoubvwugc0aVWpRkbdgQvK5b17puOt3BKXXKOmcV+oQt0oQqQ==}
+    hasBin: true
 
   '@effect/platform-node-shared@4.0.0-beta.102':
     resolution: {integrity: sha512-gVd793I72MrkX4dXo7eYtRKfNj0RW4eMRfVEKEJI16h2+mBDCzQ+gqMrog2hSTHQnaIbvbYShNQ4TVGuRCYZeQ==}
@@ -613,6 +620,8 @@ packages:
     hasBin: true
 
 snapshots:
+
+  '@effect/language-service@0.87.1': {}
 
   '@effect/platform-node-shared@4.0.0-beta.102(effect@4.0.0-beta.102)':
     dependencies:
