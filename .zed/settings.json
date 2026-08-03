@@ -1,0 +1,18 @@
+{
+  "languages": {
+    "TypeScript": {
+      "language_servers": [
+        "effect-tsgo",
+        "!vtsls",
+        "!typescript-language-server"
+      ]
+    },
+    "TSX": {
+      "language_servers": [
+        "effect-tsgo",
+        "!vtsls",
+        "!typescript-language-server"
+      ]
+    }
+  }
+}
