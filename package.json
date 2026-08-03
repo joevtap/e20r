@@ -4,14 +4,19 @@
     "type": "module",
     "scripts": {
         "build": "tsc",
+        "typecheck": "tsc --noEmit",
+        "prepare": "./scripts/prepare-effect.sh && effect-tsgo patch",
         "prestart": "pnpm run build",
         "start": "node dist/index.js",
         "e20r": "node dist/index.js",
-        "dev": "tsx src/index.ts"
+        "dev": "tsx src/index.ts",
+        "tsx": "tsx"
     },
     "devDependencies": {
         "@effect/language-service": "0.87.1",
+        "@effect/tsgo": "^0.24.3",
         "@types/node": "26.1.2",
+        "effect-solutions": "^0.5.3",
         "tsx": "4.23.1",
         "typescript": "7.0.2"
     },
