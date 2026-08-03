@@ -33,11 +33,11 @@ export type Status = typeof Status.Type;
 
 import { Match } from "effect";
 
-export class Success extends Schema.TaggedClass<Success>("Success")("Success", {
-  value: Schema.Number,
+export class Success extends Schema.TaggedClass<Success>()("Success", {
+  value: Schema.Finite,
 }) {}
 
-export class Failure extends Schema.TaggedClass<Failure>("Failure")("Failure", {
+export class Failure extends Schema.TaggedClass<Failure>()("Failure", {
   error: Schema.String,
 }) {}
 

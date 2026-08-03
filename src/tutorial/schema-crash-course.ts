@@ -16,7 +16,7 @@ const TodoTitle = pipe(
 );
 
 const Todo = Schema.Struct({
-  id: Schema.Number,
+  id: Schema.Finite,
   // title: Schema.Union([Schema.String, Schema.Null]),
   // title: Schema.NullOr(Schema.String),
   title: Schema.optionalKey(TodoTitle),
