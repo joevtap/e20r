@@ -1,6 +1,6 @@
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import { Command } from "effect/unstable/cli";
-import { Effect, pipe } from "effect";
+import { Effect } from "effect";
 
 const e20r = Command.make("e20r");
 
@@ -10,4 +10,4 @@ const command = Command.run(e20r, {
 
 const layerCli = NodeServices.layer;
 
-pipe(command, Effect.provide(layerCli), NodeRuntime.runMain);
+command.pipe(Effect.provide(layerCli), NodeRuntime.runMain);
