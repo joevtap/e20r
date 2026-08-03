@@ -1,12 +1,12 @@
 {
-    "name": "e12r",
-    "description": "effect-analyzer (e12r) - a CLI program built to mine information about the Effect library adoption in TypeScript FOSS software hosted in GitHub.",
+    "name": "e20r",
+    "description": "effect-adoption-analyzer (e20r) - a CLI program built to mine information about the Effect library adoption in TypeScript FOSS software hosted in GitHub.",
     "type": "module",
     "scripts": {
         "build": "tsc",
         "prestart": "pnpm run build",
         "start": "node dist/index.js",
-        "e12r": "node dist/index.js",
+        "e20r": "node dist/index.js",
         "dev": "tsx src/index.ts"
     },
     "devDependencies": {
@@ -18,7 +18,7 @@
     "devEngines": {
         "runtime": {
             "name": "node",
-            "version": "26.5.1",
+            "version": "24.19.0",
             "onFail": "download"
         }
     },
