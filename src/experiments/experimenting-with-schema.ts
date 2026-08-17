@@ -38,9 +38,7 @@ const program = Effect.gen(function* () {
     .readFileString("./src/experiments/aircraft-models.json", "utf-8")
     .pipe(Effect.orElseSucceed(() => "{}"));
 
-  const aircraftModels = yield* Schema.decodeEffect(
-    AircraftModelsFromJsonString,
-  )(file);
+  const aircraftModels = yield* Schema.decodeEffect(AircraftModelsFromJsonString)(file);
 
   const aircraftModelsXml = yield* AircraftModelsXmlEncoder(aircraftModels);
   return yield* Console.log(aircraftModelsXml);

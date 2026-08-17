@@ -29,17 +29,14 @@ const Todo = Schema.Struct({
 // const decodeTodo = Schema.decodeUnknownResult(Todo);
 const decodeTodo = Schema.decodeUnknownEffect(Todo);
 
-const program: Effect.Effect<void, Schema.SchemaError, never> = Effect.gen(
-  function* () {
-    const todo = yield* decodeTodo({
-      id: 12,
-      title: "1234",
-      trimmedDescription:
-        "     Description with leading whitespace will be trimmed.",
-      isActive: false,
-    });
-    yield* Console.log(todo);
-  },
-);
+const program: Effect.Effect<void, Schema.SchemaError, never> = Effect.gen(function* () {
+  const todo = yield* decodeTodo({
+    id: 12,
+    title: "1234",
+    trimmedDescription: "     Description with leading whitespace will be trimmed.",
+    isActive: false,
+  });
+  yield* Console.log(todo);
+});
 
 NodeRuntime.runMain(program);

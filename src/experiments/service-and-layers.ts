@@ -31,7 +31,7 @@ class Database extends Context.Service<
       "user-2": { id: "user-2", name: "Bob" },
     };
 
-    const query = (sql: string) => Effect.succeed(Object.values(records));
+    const query = (_sql: string) => Effect.succeed(Object.values(records));
     const execute = (sql: string) => Console.log(`Would execute: ${sql}`);
 
     return { query, execute };
@@ -51,19 +51,17 @@ class Logger extends Context.Service<
   });
 }
 
-const program: Effect.Effect<void, never, Database | Logger> = Effect.gen(
-  function* () {
-    const logger = yield* Logger;
-    const db = yield* Database;
+const program: Effect.Effect<void, never, Database | Logger> = Effect.gen(function* () {
+  const logger = yield* Logger;
+  const db = yield* Database;
 
-    yield* logger.log("Users:\n");
-    const users = yield* db.query("select * from users");
+  yield* logger.log("Users:\n");
+  const users = yield* db.query("select * from users");
 
-    for (const user of users as Array<{ name: string }>) {
-      yield* logger.log(user.name);
-    }
-  },
-);
+  for (const user of users as Array<{ name: string }>) {
+    yield* logger.log(user.name);
+  }
+});
 
 const testLayer = Logger.layerTest.pipe(Layer.provideMerge(Database.layerTest));
 
