@@ -1,28 +1,39 @@
 {
-  "name": "e12r",
-  "description": "effect-analyzer (e12r) - a CLI program built to mine information about the Effect library adoption in TypeScript FOSS software hosted in GitHub.",
-  "type": "module",
-  "scripts": {
-    "build": "tsc",
-    "prestart": "pnpm run build",
-    "start": "node dist/index.js",
-    "e12r": "node dist/index.js",
-    "dev": "tsx src/index.ts"
-  },
-  "devDependencies": {
-    "@types/node": "26.1.2",
-    "tsx": "4.23.1",
-    "typescript": "7.0.2"
-  },
-  "devEngines": {
-    "runtime": {
-      "name": "node",
-      "version": "26.5.1",
-      "onFail": "download"
+    "name": "e20r",
+    "description": "effect-adoption-analyzer (e20r) - a CLI program built to mine information about the Effect library adoption in TypeScript FOSS software hosted in GitHub.",
+    "type": "module",
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc --noEmit",
+        "lint": "oxlint",
+        "lint:fix": "oxlint --fix",
+        "format": "oxfmt",
+        "format:check": "oxfmt --check",
+        "prepare": "./scripts/prepare-effect.sh && effect-tsgo patch",
+        "prestart": "pnpm run build",
+        "start": "node dist/index.js",
+        "e20r": "node dist/index.js",
+        "dev": "tsx src/index.ts",
+        "tsx": "tsx"
+    },
+    "devDependencies": {
+        "@effect/language-service": "0.87.2",
+        "@effect/tsgo": "0.36.5",
+        "@types/node": "26.1.2",
+        "oxfmt": "0.63.0",
+        "oxlint": "1.78.0",
+        "tsx": "4.23.1",
+        "typescript": "7.0.2"
+    },
+    "devEngines": {
+        "runtime": {
+            "name": "node",
+            "version": "24.19.0",
+            "onFail": "download"
+        }
+    },
+    "dependencies": {
+        "@effect/platform-node": "4.0.0-rc.110",
+        "effect": "4.0.0-rc.110"
     }
-  },
-  "dependencies": {
-    "@effect/platform-node": "4.0.0-beta.102",
-    "effect": "4.0.0-beta.102"
-  }
 }
