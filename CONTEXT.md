@@ -21,19 +21,43 @@ A Study Analysis conclusion that a package boundary belongs to an active workspa
 _Avoid_: Workspace selection evidence, package boundary, monorepo package
 
 **Qualified Repository**:
-A sampled repository that contains at least one package boundary with Effect declared directly in `dependencies` and verified Effect usage in eligible source files.
+A candidate repository that passes every pinned population, libre-license, and Effect-adoption selection rule, including a Package Boundary with Effect declared directly in `dependencies` and verified Effect usage in eligible source files owned by that boundary.
 _Avoid_: Effect repository, Effect user
 
 **Ranking Snapshot**:
-The candidate ordering observed at a recorded time, ranked by stars descending, forks descending, then canonical repository name ascending.
+A bounded, non-atomic observation of candidate repository metadata and default-branch commits, ranked by observed stars descending, forks descending, then canonical repository name ascending, with retrieval provenance for every observation.
 _Avoid_: Current ranking, top repositories
 
+**Evaluated Frame**:
+The Ranking Snapshot candidates examined through the completed cutoff star group when constructing one cohort revision, including selected, rejected, quarantined, and unevaluated candidates needed for inclusion-flow accounting.
+_Avoid_: Selected cohort, ranking snapshot
+
+**Selected Cohort**:
+The Qualified Repositories included by one versioned cohort-selection policy, comprising the configured base target and every additional qualifier in the cutoff star group.
+_Avoid_: Evaluated frame, all candidates, current top repositories
+
+**Signal**:
+A cataloged kind of repository evidence with a stable human-readable slug and description, observed for a specific domain subject and normalized value.
+_Avoid_: Probe, match, classification
+
+**Signal Observation**:
+The outcome of observing one Signal for a domain subject, scoped to either a Ranking Snapshot candidate or a recorded repository revision, including its value and provenance locations when present.
+_Avoid_: Signal definition, probe result, finding
+
+**Probe**:
+A cataloged evidence-gathering operation that searches a declared scope and emits Signal Observations. A Probe may use textual matches as candidates, but only verified evidence establishes a present Signal.
+_Avoid_: Signal, study analysis
+
+**Cohort Selection Decision**:
+A Study Analysis record that applies a versioned selection policy to Signal Observations and Probe outcomes for one candidate, producing a provisional or final selected, rejected, or quarantined outcome with explicit reasons.
+_Avoid_: Signal, probe result
+
 **Repository Report**:
-The collected evidence for one sampled repository, containing dependency specifiers, package-manager signals, host-runtime signals, source-file inventories, and their provenance. Scientific classifications and aggregate findings are derived later.
-_Avoid_: Analysis result, classification
+A derived human-readable view of Signal Observations and Probe outcomes for one sampled repository. It is not the canonical Evidence Collection representation.
+_Avoid_: Signal ledger, analysis result, classification
 
 **Analysis Checkout**:
-A runtime-managed clone of a sampled repository at a recorded revision, stored outside the development-only `.repos/` reference directory.
+A runtime-managed clone of a candidate or Sampled Repository at a recorded revision, used for local probing and analysis outside the development-only `.repos/` reference directory. Creating it does not imply that the candidate qualifies or has been selected.
 _Avoid_: Reference repository, fixture repository
 
 **Analysis Fixture**:
@@ -49,7 +73,7 @@ A JavaScript execution environment evidenced within a sampled repository, such a
 _Avoid_: Runtime, Effect runtime
 
 **Evidence Collection**:
-The deterministic repository pass that records observed values, files, signals, and provenance without assigning study-level categories or drawing findings.
+The deterministic probing process that emits provenance-bearing Signal Observations without assigning study-level categories or drawing findings.
 _Avoid_: Analysis, classification
 
 **Study Analysis**:

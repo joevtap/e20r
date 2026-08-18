@@ -1,5 +1,9 @@
 # Host-Runtime Evidence Catalog
 
+Catalog version: `1-draft`
+
+Every rule in this catalog inherits rule version `1` unless the rule explicitly declares another version.
+
 ## Scope
 
 This catalog defines deterministic observations for Evidence Collection. It does not define Study Analysis rules, precedence, confidence aggregation, or a final Host Runtime classification. A collector should emit every matched observation independently, including contradictory signals.

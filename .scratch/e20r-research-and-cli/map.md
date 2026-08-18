@@ -14,20 +14,22 @@ A decision-complete MSR research protocol for studying Effect adoption in open-s
 - Repository collection records evidence and provenance. Study analysis derives classifications and findings later.
 - Begin with synthetic single-package fixtures, then a real leaf repository, then `anomalyco/opencode`, then introduce SQLite-backed batch execution.
 - `.repos/` is development-only reference material, never e20r's runtime Analysis Checkout location.
-- Prior retained decisions cover clone depth, clone-first local qualification, GitHub API operating constraints, SQLite as eventual durable working state, and independently invocable pipeline commands.
+- Prior retained decisions cover clone depth, clone-backed local probing, GitHub API operating constraints, SQLite as eventual durable working state, and independently invocable pipeline commands. Clone completion never implies selection.
 - `docs/research/opencode-first-e20r-subject.md` records the bounded OpenCode reconnaissance.
 
 ## Decisions so far
 
 <!-- Closed ticket resolutions are indexed here by name. -->
 
-- [Define the Initial Repository Evidence Report](issues/01-define-initial-evidence-report.md) - emit a nested, versioned partial report with per-value provenance and explicit evidence, exclusions, and failures; derive qualification only in later Study Analysis.
+- [Define the Initial Signal Ledger and Probing Protocol](issues/01-define-initial-evidence-report.md) - progressively select candidates with ordered existence probes, then exhaustively collect a flat provenance-bearing signal ledger; cloning acquires evidence but never marks selection.
 
 - [Define Package-Boundary and Workspace Discovery](issues/02-define-package-boundary-discovery.md) - discover valid manifests repository-wide, assign sources to their nearest valid boundary, and record bounded workspace-selection evidence separately from derived membership and qualification.
 
 - [Catalog Host-Runtime Evidence](issues/03-catalog-host-runtime-evidence.md) - collect explicit, provenance-rich host and provider signals independently; shared APIs and tooling remain weak, and runtime classification happens later.
 
 - [Define the Libre-License Evidence Policy](issues/04-define-libre-license-policy.md) - all applicable local license evidence must be allowlisted; any confirmed non-libre term rejects, while unresolved evidence is quarantined.
+
+- [Define Ranked Cohort Selection](issues/05-define-ranked-cohort-selection.md) - rank a bounded repository-metadata snapshot, select default N=100 through required signals, complete the cutoff star group, and preserve exact commits and full inclusion-flow accounting.
 
 ## Not yet specified
 
