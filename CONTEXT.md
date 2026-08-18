@@ -69,7 +69,7 @@ The dependency value written for `effect` in a package boundary's `dependencies`
 _Avoid_: Effect version, resolved version
 
 **Host Runtime**:
-A JavaScript execution environment evidenced within a sampled repository, such as Node.js, Bun, Deno, a browser, or an edge platform. A repository may use more than one.
+A JavaScript server-side execution runtime evidenced within a sampled repository: Node.js, Bun, or Deno. A repository may use more than one.
 _Avoid_: Runtime, Effect runtime
 
 **Evidence Collection**:

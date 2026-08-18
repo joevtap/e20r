@@ -74,9 +74,9 @@
     const definitions = [
       { slug:"synthetic-fixtures", name:"Synthetic fixtures", commit:null, checks:["Selection ordering and early stop", "Same-boundary qualification", "Quarantine and multiple provenance", "Stable signal and probe slugs"] },
       { slug:"effect-mcp", name:"niklaserik/effect-mcp", commit:"5c6a0c76ca408a7d96dc98eb442f4b68aa659389", checks:["Pinned commit acquisition", "Complete local MIT evidence", "One valid package boundary", "All three Effect-importing source files", "pnpm and affirmative Node invocation", "No unexplained required-Probe failures"] },
-      { slug:"opencode", name:"anomalyco/opencode", commit:"9b0dd36cda0b9accb429a7f9f9ad9b054a27d04a", checks:["Pinned commit and required selection probes", "Repository-wide package boundaries", "Shared workspace selection and outsiders", "Independent Bun package-manager evidence", "Verbatim catalog: declarations", "Bun, Node, browser, and Electron signals", "Explicit exclusions and partial-probe evidence"] }
+      { slug:"opencode", name:"anomalyco/opencode", commit:"9b0dd36cda0b9accb429a7f9f9ad9b054a27d04a", checks:["Pinned commit and required selection probes", "Repository-wide package boundaries", "Shared workspace selection and outsiders", "Independent Bun package-manager evidence", "Verbatim catalog: declarations", "Node and Bun signals; complete Probe with no Deno observations", "Explicit exclusions and partial-probe evidence"] }
     ];
-    const initial = () => ({ current:0, interfaceVersion:"signal-ledger/2-draft", sqliteDesignUnlocked:false, stages:definitions.map((x,i)=>({ ...x, status:i===0?"available":"waiting", checks:x.checks.map(name=>({name,status:"pending"})) })) });
+    const initial = () => ({ current:0, interfaceVersion:"signal-ledger/3-draft", sqliteDesignUnlocked:false, stages:definitions.map((x,i)=>({ ...x, status:i===0?"available":"waiting", checks:x.checks.map(name=>({name,status:"pending"})) })) });
     const advance = state => {
       const stage = state.stages[state.current];
       if (!stage.checks.every(x => x.status === "passed" || x.status === "accepted-limitation")) return null;

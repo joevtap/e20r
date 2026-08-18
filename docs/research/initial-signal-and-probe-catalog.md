@@ -2,7 +2,7 @@
 
 This planning artifact defines the first version of e20r's flat evidence representation and ordered probing protocol. Implementations may optimize detection internally, but a study run pins the catalog version and preserves the resulting observations and probe outcomes.
 
-Catalog version: `2-draft`
+Catalog version: `3-draft`
 
 This document fixes semantic records rather than a database or serialization schema. **Design Durable Local State and Checkout Lifecycle** owns the durable physical schema.
 
@@ -49,7 +49,7 @@ Signal slugs name evidence, while Probe slugs name evidence-gathering operations
 | `source-file-uses-effect` | An eligible source file structurally imports, exports from, or dynamically imports `effect`, `effect/*`, or `@effect/*`; type-only imports count while comments and plain strings do not. | Source file | Verbatim qualifying package specifier and syntax kind | Required in the same Package Boundary as the direct declaration. |
 | `package-manager` | Records explicit package-manager evidence. | Repository or Package Boundary | Normalized manager slug and optional declared version | Descriptive. |
 | `workspace-selection` | A recognized workspace declaration selects a valid Package Boundary. | Package Boundary | Declaring root, mechanism, pattern, and package path | Descriptive. |
-| `host-runtime` | Records one deterministic host-runtime observation from Host-Runtime Evidence Catalog `2-draft`. | Repository, Package Boundary, or source file | Catalog and rule version, rule ID, named runtime, strength, normalized observed value, and evidence boundary | Descriptive; occurrence provenance records exact locations. |
+| `host-runtime` | Records one deterministic Node.js, Bun, or Deno observation from Host-Runtime Evidence Catalog `3-draft`. | Repository, Package Boundary, or source file | Catalog and rule version, rule ID, named runtime, strength, normalized observed value, and evidence boundary | Descriptive; occurrence provenance records exact locations. |
 | `source-file-is-eligible` | A tracked source file is included in the exhaustive source inventory. | Source file | Boolean `true` | Defines analysis denominator. |
 | `source-file-is-excluded` | A tracked source file is excluded from analysis. | Source file | Normalized exclusion-reason slug | Defines analysis denominator and exclusions. |
 
@@ -78,7 +78,7 @@ Provisional selection means all required selection rules passed. Final selection
 
 ## Ordered existence probes
 
-All initial detectors have detector version `1` within catalog `2-draft`.
+All initial detectors have detector version `1` within catalog `3-draft`.
 
 | Priority | Probe slug | Description | Modes | Prerequisite; scope and exclusions | Emitted Signals and decision effect |
 | --- | --- | --- | --- | --- | --- |

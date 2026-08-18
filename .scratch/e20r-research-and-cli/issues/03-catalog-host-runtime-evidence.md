@@ -5,8 +5,8 @@ Status: resolved
 
 ## Question
 
-Which deterministic, provenance-preserving evidence sources can establish Node.js, Bun, Deno, browser, Electron, and edge host-runtime signals at package and source boundaries, and which tempting signals are too weak to record as affirmative runtime evidence?
+Which deterministic, provenance-preserving evidence sources can establish Node.js, Bun, and Deno Host Runtime signals at Package and source boundaries, and which tempting signals are too weak to record as affirmative runtime evidence?
 
 ## Answer
 
-Collect explicit host declarations, runtime-specific configuration/invocations/APIs, browser entry/DOM evidence, Electron APIs, and provider-specific edge deployment contracts as separate provenance-rich observations. Shared Node/Web APIs, package-manager artifacts, frameworks, dev tooling, and generic worker/edge vocabulary remain weak observations and must not affirm a host; classification is deferred to Study Analysis. See [Host-Runtime Evidence Catalog](../../../docs/research/host-runtime-evidence-catalog.md).
+Collect explicit Node.js, Bun, and Deno declarations, runtime-specific configuration, invocations, identity checks, and unique APIs as separate provenance-rich observations. Shared APIs, package-manager artifacts, frameworks, and development tooling remain weak observations and must not affirm a Host Runtime; classification is deferred to Study Analysis. Browser, Electron, and edge platforms are not Host Runtimes in e20r and are not collected by this catalog. See [Host-Runtime Evidence Catalog](../../../docs/research/host-runtime-evidence-catalog.md).

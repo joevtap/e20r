@@ -9,7 +9,7 @@ A decision-complete MSR research protocol for studying Effect adoption in open-s
 ## Notes
 
 - Planning only: this map decides the protocol and product route; implementation belongs to the subsequent handoff.
-- Exception: [Execute the Development Validation Progression](issues/10-execute-development-validation-progression.md) is an evidence-producing task required before durable-state design; product implementation remains outside this map.
+- Exception: [Execute the Development Validation Progression](issues/10-execute-development-validation-progression.md) is an evidence-producing task required before durable-state design. It may add only the approved generic unsupported validation adapter; all stable product CLI design and implementation remain outside this map.
 - Consult `CONTEXT.md` for canonical evidence and study vocabulary.
 - Use `effect-ts`, `grilling`, and `domain-modeling` when resolving design tickets; use `prototype` for concrete report or workflow artifacts.
 - Repository collection records evidence and provenance. Study analysis derives classifications and findings later.
@@ -26,7 +26,7 @@ A decision-complete MSR research protocol for studying Effect adoption in open-s
 
 - [Define Package-Boundary and Workspace Discovery](issues/02-define-package-boundary-discovery.md) - discover valid manifests repository-wide, assign sources to their nearest valid boundary, and record bounded workspace-selection evidence separately from derived membership and qualification.
 
-- [Catalog Host-Runtime Evidence](issues/03-catalog-host-runtime-evidence.md) - collect explicit, provenance-rich host and provider signals independently; shared APIs and tooling remain weak, and runtime classification happens later.
+- [Catalog Host-Runtime Evidence](issues/03-catalog-host-runtime-evidence.md) - collect explicit Node.js, Bun, and Deno signals independently; shared APIs and tooling remain weak, and runtime classification happens later.
 
 - [Define the Libre-License Evidence Policy](issues/04-define-libre-license-policy.md) - all applicable local license evidence must be allowlisted; any confirmed non-libre term rejects, while unresolved evidence is quarantined.
 
@@ -48,4 +48,4 @@ A decision-complete MSR research protocol for studying Effect adoption in open-s
 - Building the later Effect AI results agent as part of the initial CLI specification.
 - Collecting or interpreting Turborepo, Nx, Lerna, Rush, or other monorepo-engine configuration.
 - Workspace-mechanism expansion beyond `package.json#workspaces`, `pnpm-workspace.yaml`, Yarn-specific edge cases, and nested or multiple workspace roots.
-- Deno and exhaustive edge-provider host-runtime support in the initial repository progression.
+- Browser, Electron, and edge platform evidence or classification.
