@@ -9,6 +9,7 @@ A decision-complete MSR research protocol for studying Effect adoption in open-s
 ## Notes
 
 - Planning only: this map decides the protocol and product route; implementation belongs to the subsequent handoff.
+- Exception: [Execute the Development Validation Progression](issues/10-execute-development-validation-progression.md) is an evidence-producing task required before durable-state design; product implementation remains outside this map.
 - Consult `CONTEXT.md` for canonical evidence and study vocabulary.
 - Use `effect-ts`, `grilling`, and `domain-modeling` when resolving design tickets; use `prototype` for concrete report or workflow artifacts.
 - Repository collection records evidence and provenance. Study analysis derives classifications and findings later.
@@ -31,12 +32,13 @@ A decision-complete MSR research protocol for studying Effect adoption in open-s
 
 - [Define Ranked Cohort Selection](issues/05-define-ranked-cohort-selection.md) - rank a bounded repository-metadata snapshot, select default N=100 through required signals, complete the cutoff star group, and preserve exact commits and full inclusion-flow accounting.
 
+- [Validate the Real-Repository Progression](issues/06-validate-real-repository-progression.md) - gate stable signals through synthetic fixtures, pinned effect-mcp, and pinned OpenCode before SQLite design; limitations require separate human acceptance.
+
 ## Not yet specified
 
 - The Effect feature and coding-pattern taxonomy, extraction method, and prevalence measures. This becomes specifiable after representative v3, v4 beta, and v4 stable source evidence exists.
 - Selection criteria and detailed traversal method for the later two-or-three-repository longitudinal adoption study. This becomes specifiable after cross-sectional evidence reveals suitable cases.
 - Stable end-user report commands and Effect AI query tools. These become specifiable after repeated Study Analysis queries expose durable concepts.
-- Exact support order for host runtimes beyond the initial Node.js fixture.
 
 ## Out of scope
 
@@ -46,3 +48,4 @@ A decision-complete MSR research protocol for studying Effect adoption in open-s
 - Building the later Effect AI results agent as part of the initial CLI specification.
 - Collecting or interpreting Turborepo, Nx, Lerna, Rush, or other monorepo-engine configuration.
 - Workspace-mechanism expansion beyond `package.json#workspaces`, `pnpm-workspace.yaml`, Yarn-specific edge cases, and nested or multiple workspace roots.
+- Deno and exhaustive edge-provider host-runtime support in the initial repository progression.

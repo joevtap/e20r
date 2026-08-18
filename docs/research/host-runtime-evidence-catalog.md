@@ -1,6 +1,6 @@
 # Host-Runtime Evidence Catalog
 
-Catalog version: `1-draft`
+Catalog version: `2-draft`
 
 Every rule in this catalog inherits rule version `1` unless the rule explicitly declares another version.
 
@@ -17,6 +17,7 @@ Each observation should preserve a stable rule ID, runtime named by the evidence
 | Rule ID | Host | Boundary | Deterministic observation | Strength and qualification |
 | --- | --- | --- | --- | --- |
 | `node.manifest.engines` | Node.js | package | `package.json` has a non-wildcard `engines.node` value | Affirmative declaration of Node compatibility/intent; preserve the range. npm says `engines.node` specifies versions of Node, but also says it is advisory unless `engine-strict` is enabled. Not exclusive evidence. [npm `package.json`: engines](https://docs.npmjs.com/cli/v11/configuring-npm/package-json#engines) |
+| `node.script.invocation` | Node.js | package/source | A parsed package script directly invokes `node` to execute repository application output | Affirmative Node execution intent. Preserve the script key, command, and target; exclude development-only tooling commands and test-only targets. [Node command-line API](https://nodejs.org/api/cli.html) |
 | `node.source.node_builtin` | Node.js API | source | A parsed static/dynamic import or `require` resolves to `node:<builtin>` | Affirmative use of the Node API contract, but not affirmative Node-host execution: Deno exposes Node APIs and Bun is Node-compatible. Preserve the specifier rather than converting it to a Node-host conclusion. [Node process import](https://nodejs.org/api/process.html#process), [Deno Node APIs](https://docs.deno.com/api/node/), [Bun runtime](https://bun.com/docs/runtime) |
 | `node.source.unique_process_release` | Node.js | source | Parsed code reads `process.release.name` and compares/uses the value `node` | Affirmative host-identification code. Node defines `process` as information/control for the current Node process and documents `process.release`. [Node process](https://nodejs.org/api/process.html#processrelease) |
 | `node.manifest.export_condition` | Node.js | package | A reachable `exports`/`imports` branch is keyed `node` or `node-addons` | Affirmative Node-targeted package entry point, not proof that the package itself executes under Node. Node defines these conditions as matching Node environments. Preserve key and target. [Node conditional exports](https://nodejs.org/api/packages.html#conditional-exports) |
