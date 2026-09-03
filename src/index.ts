@@ -45,6 +45,35 @@ const fetchGithub = Command.make("fetch-github", {}, () =>
       .pipe(
         // Following `rel="next"` in response headers is the robust way to iterate over the pages of a single request.
         // TODO: how to do that in effect?
+        //
+        // Plan (primitives verified against Effect v4, `@since 4.0.0` sources):
+        //
+        // 1. Extract the `link` response header with `Headers.get(name)`, which
+        //    returns `Option<string>`: https://github.com/Effect-TS/effect/blob/main/packages/effect/src/unstable/http/Headers.ts
+        //    Reading headers off the response is `response.headers: Headers.Headers`:
+        //    https://github.com/Effect-TS/effect/blob/main/packages/effect/src/unstable/http/HttpClientResponse.ts
+        //
+        // 2. Drive the loop with `Stream.paginate(state, (state) => Effect<[values[], Option<nextState>], E, R>)`.
+        //    It exists precisely for this: "Use to consume paginated APIs where each
+        //    step returns a batch of values together with an optional next state."
+        //    Returning `Option.none()` ends the stream. State can be the next-page URL,
+        //    values are the parsed repos of that page.
+        //    Docs: https://www.effect.website/docs/v4/api/effect/Stream
+        //    Source: https://github.com/Effect-TS/effect/blob/main/packages/effect/src/Stream.ts
+        //
+        // 3. Parse `<url>; rel="next"` out of the header value with plain string/URL
+        //    handling (RFC 8288 link format, no Effect involved). No `rel="next"`
+        //    means the last page was reached. Note `rel="last"` also appears in the
+        //    header, but its meaning interacts with GitHub's 1000-result search cap
+        //    (see TODO above), so termination on missing `rel="next"` is safer.
+        //
+        // Alternative without streams: `Effect.whileLoop` returns an array instead
+        //    (same repo, packages/effect/src/Effect.ts). `Effect.iterate` from v3 no
+        //    longer exists in v4.
+        //
+        // Note: in v4 the response body is cached, so reading headers and
+        // `schemaBodyJson` from the same response in one step is safe
+        // (pattern: https://www.effective.software/courses/effect-atom/managing-url-state/adding-pagination).
         Effect.tap((value) => Effect.log(value.headers)),
         Effect.flatMap(HttpClientResponse.schemaBodyJson(GithubRepoSearchResponseSchema)),
       );
