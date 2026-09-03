@@ -2,7 +2,8 @@ import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import { Command, Flag } from "effect/unstable/cli";
 import { Effect, Layer, Option, Schedule } from "effect";
 import { AppConfig, AppConfigLayer, makeAppConfigOverlayLayer } from "./config.ts";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
+import { GithubRepoSearchResponseSchema } from "./domain/github.ts";
 
 /**
  * Entrypoint for manual testing purposes.
@@ -22,17 +23,33 @@ const fetchGithub = Command.make("fetch-github", {}, () =>
       HttpClient.retryTransient({ schedule: Schedule.exponential(100), times: 3 }),
     );
 
-    // TODO: GithubRepoSearchResponseSchema
-
     // TODO: how to make paginated queries on the most popular typescript repositories (by stars and forks and lexicographical order) that are not forks, archived and are public
-    const res = yield* githubRepoSearchClient.get(
-      `https://api.github.com/search/repositories?${new URLSearchParams({
-        q: "language:typescript fork:false archived:false",
-        sort: "stars",
-      })}`,
-    );
+    // Progress on that TODO: there is a hard-cap of 1000 results per search. So I have to define dynamic intervals of
+    // star counts while paginating.
+    //
+    // It would work this way:
+    // 1. One query unbounded by stars
+    // 2. Paginate over it using link rel="next"
+    // 3. Get the lower bound of star counts of that query from the last listed repo
+    // 4. Iterate over the search by using the star count of the last repo
+    //    as the upper bound of the next search (stars:<=n)
+    const res = yield* githubRepoSearchClient
+      .get(
+        `https://api.github.com/search/repositories?${new URLSearchParams({
+          q: "language:typescript fork:false archived:false",
+          sort: "stars",
+          per_page: "100",
+          page: "1",
+        })}`,
+      )
+      .pipe(
+        // Following `rel="next"` in response headers is the robust way to iterate over the pages of a single request.
+        // TODO: how to do that in effect?
+        Effect.tap((value) => Effect.log(value.headers)),
+        Effect.flatMap(HttpClientResponse.schemaBodyJson(GithubRepoSearchResponseSchema)),
+      );
 
-    yield* res.json.pipe(Effect.andThen((res) => Effect.log((res as any).items[0])));
+    yield* Effect.log(res.items[0]);
   }),
 );
 

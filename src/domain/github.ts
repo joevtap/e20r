@@ -1,114 +1,108 @@
-/*
-{
-  "id": 60918486,
-  "node_id": "MDEwOlJlcG9zaXRvcnk2MDkxODQ4Ng==",
-  "name": "node-jq",
-  "full_name": "sanack/node-jq",
-  "private": false,
-  "owner": {
-    "login": "sanack",
-    "id": 19934836,
-    "type": "Organization",
-    "html_url": "https://github.com/sanack",
-    "avatar_url": "https://avatars.githubusercontent.com/u/19934836?v=4",
-    "site_admin": false
-  },
-  "html_url": "https://github.com/sanack/node-jq",
-  "description": " Node.js wrapper for jq",
-  "fork": false,
-  "url": "https://api.github.com/repos/sanack/node-jq",
-  "created_at": "2016-06-11T17:12:53Z",
-  "updated_at": "2026-07-27T08:24:59Z",
-  "pushed_at": "2026-07-27T08:24:17Z",
-  "homepage": "",
-  "size": 2330,
-  "stargazers_count": 305,
-  "watchers_count": 305,
-  "language": "TypeScript",
-  "forks_count": 57,
-  "open_issues_count": 28,
-  "license": {
-    "key": "mit",
-    "name": "MIT License",
-    "spdx_id": "MIT",
-    "url": "https://api.github.com/licenses/mit"
-  },
-  "topics": ["jq", "json", "nodejs"],
-  "visibility": "public",
-  "forks": 57,
-  "open_issues": 28,
-  "watchers": 305,
-  "default_branch": "main",
-  "archived": false,
-  "disabled": false,
-  "score": 1.0
-}
-*/
+import { Schema } from "effect";
 
-/** Envelope for GET /search/repositories — always exactly these three keys. */
-interface SearchRepositoriesResponse {
-  /** Matches for the query at query time; can change between calls. */
-  total_count: number;
-  /** true ⇒ the query hit its internal time limit; slice may be partial — re-run it. */
-  incomplete_results: boolean;
-  items: SearchResultRepository[];
-}
+export const GithubRepoLicenseSchema = Schema.Struct({
+  key: Schema.String,
+  name: Schema.String,
+  spdxId: Schema.NullOr(Schema.String),
+  url: Schema.NullOr(Schema.String),
+}).pipe(
+  Schema.encodeKeys({
+    spdxId: "spdx_id",
+  }),
+);
 
-/** One search hit. A trimmed repository, not the full GET /repos/{owner}/{repo} object. */
-interface SearchResultRepository {
-  id: number;
-  node_id: string;
-  /** "owner-name/repo-name" — your third sort key, already in org/repo form. */
-  full_name: string;
-  /** Repo name alone, without the owner. */
-  name: string;
-  owner: {
-    login: string;
-    id: number;
-    type: string; // "User" | "Organization"
-    html_url: string;
-    avatar_url: string;
-    site_admin: boolean;
-  };
-  private: boolean;
-  html_url: string;
-  description: string | null;
-  /** true ⇒ this repo is itself a fork (redundant with fork:false in the query — keep as a sanity check). */
-  fork: boolean;
-  url: string;
-  created_at: string; // ISO 8601
-  updated_at: string; // ISO 8601
-  pushed_at: string; // ISO 8601 — last commit on any branch
+export type GithubRepoLicense = Schema.Schema.Type<typeof GithubRepoLicenseSchema>;
 
-  homepage: string | null;
-  size: number; // KB
+export const GithubRepoSchema = Schema.Struct({
+  id: Schema.Finite,
+  url: Schema.String,
+  license: Schema.NullOr(GithubRepoLicenseSchema),
+  language: Schema.NullOr(Schema.String),
+  description: Schema.NullOr(Schema.String),
+  defaultBranch: Schema.String, // Used to clone
 
-  /** ★ Sort key 1. */
-  stargazers_count: number;
-  /** ★ Sort key 2. */
-  forks_count: number;
+  // Sorting (in order)
+  stargazersCount: Schema.Finite,
+  forksCount: Schema.Finite,
+  fullName: Schema.String,
 
-  language: string | null;
-  license: { key: string; name: string; spdx_id: string; url: string } | null;
-  topics: string[];
-  /** "public" | "private" | "internal" — present since API version 2022-11-28. */
-  visibility: string;
+  // Redundant checks
+  fork: Schema.Boolean, // Should be false
+  private: Schema.Boolean, // Should be false
+  archived: Schema.Boolean, // Should be false
+  disabled: Schema.Boolean, // Should be false
+  visibility: Schema.Literals(["public", "private", "internal"]), // Should be public
 
-  // ⚠️ Legacy duplicates of the counts above — same values, different names.
-  // Pick one spelling and use it consistently (the ★ ones above).
-  forks: number; // == forks_count
-  open_issues: number; // == open_issues_count
-  open_issues_count: number;
-  watchers: number; // == stargazers_count
-  watchers_count: number;
+  // Datetime
+  createdAt: Schema.DateTimeUtcFromString,
+  updatedAt: Schema.DateTimeUtcFromString,
+  pushedAt: Schema.DateTimeUtcFromString,
 
-  default_branch: string; // Important for cloning later
-  archived: boolean; // use to check the intended query
-  disabled: boolean; // =above
-  /** Relevance score. Meaningless here (1.0) unless the query has text keywords. Ignore it. */
-  score: number;
+  // Remaining fields of the GitHub Repository Search endpoint, in API payload order.
+  // None are needed by this application today; they are kept so the schema mirrors the
+  // full response and the data stays available if requirements change.
 
-  // Only present on authenticated requests:
-  permissions?: Record<string, boolean>;
-  temp_clone_token?: string;
-}
+  nodeId: Schema.String,
+  name: Schema.String,
+  owner: Schema.Struct({
+    login: Schema.String,
+    id: Schema.Finite,
+    type: Schema.Literals(["User", "Organization"]),
+    htmlUrl: Schema.String,
+    avatarUrl: Schema.String,
+    siteAdmin: Schema.Boolean,
+  }).pipe(
+    Schema.encodeKeys({
+      htmlUrl: "html_url",
+      avatarUrl: "avatar_url",
+      siteAdmin: "site_admin",
+    }),
+  ),
+  htmlUrl: Schema.String,
+  homepage: Schema.NullOr(Schema.String),
+  size: Schema.Finite, // in KB
+
+  watchersCount: Schema.Finite,
+  openIssuesCount: Schema.Finite,
+  topics: Schema.Array(Schema.String),
+  forks: Schema.Finite,
+  openIssues: Schema.Finite,
+  watchers: Schema.Finite,
+
+  score: Schema.Finite, // Relevance to the search query, always 1.0 unless the query has text keywords
+
+  // Only present on authenticated requests
+  permissions: Schema.optionalKey(Schema.Record(Schema.String, Schema.Boolean)),
+  tempCloneToken: Schema.optionalKey(Schema.String),
+}).pipe(
+  Schema.encodeKeys({
+    defaultBranch: "default_branch",
+    stargazersCount: "stargazers_count",
+    forksCount: "forks_count",
+    fullName: "full_name",
+    createdAt: "created_at",
+    updatedAt: "updated_at",
+    pushedAt: "pushed_at",
+    nodeId: "node_id",
+    htmlUrl: "html_url",
+    watchersCount: "watchers_count",
+    openIssuesCount: "open_issues_count",
+    openIssues: "open_issues",
+    tempCloneToken: "temp_clone_token",
+  }),
+);
+
+export type GithubRepoSchema = Schema.Schema.Type<typeof GithubRepoSchema>;
+
+export const GithubRepoSearchResponseSchema = Schema.Struct({
+  totalCount: Schema.Finite,
+  incompleteResults: Schema.Boolean,
+  items: Schema.Array(GithubRepoSchema),
+}).pipe(
+  Schema.encodeKeys({
+    totalCount: "total_count",
+    incompleteResults: "incomplete_results",
+  }),
+);
+
+export type GithubRepoSearchResponseSchema = Schema.Schema.Type<typeof GithubRepoSearchResponseSchema>;
