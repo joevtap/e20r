@@ -55,27 +55,18 @@ const fetchGithub = Command.make("fetch-github", {}, () =>
 
 const e20r = Command.make("e20r").pipe(
   Command.withSharedFlags({
-    n: Flag.integer("target-effect-repositories-n").pipe(
-      Flag.withAlias("n"),
-      Flag.withDescription("Number of Effect repositories to target"),
-      Flag.optional,
-    ),
-    B: Flag.integer("maximum-inspected-typescript-repositories-b").pipe(
+    repoSearchBudget: Flag.integer("repo-search-budget").pipe(
       Flag.withAlias("b"),
-      Flag.withDescription("Maximum number of TypeScript repositories to inspect"),
+      Flag.withDescription("Maximum number of TypeScript repositories to search and inspect"),
       Flag.optional,
     ),
   }),
   Command.withSubcommands([fetchGithub]),
-  Command.provide(({ n, B }) =>
+  Command.provide(({ repoSearchBudget }) =>
     makeAppConfigOverlayLayer({
-      ...Option.match(n, {
+      ...Option.match(repoSearchBudget, {
         onNone: () => {},
-        onSome: (value) => ({ targetEffectRepositoriesN: value }),
-      }),
-      ...Option.match(B, {
-        onNone: () => {},
-        onSome: (value) => ({ maximumInspectedTypescriptRepositoriesB: value }),
+        onSome: (value) => ({ repoSearchBudget: value }),
       }),
     }),
   ),

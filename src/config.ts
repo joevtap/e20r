@@ -18,11 +18,7 @@ const GithubApiKeySchema = Schema.Redacted(
 );
 
 const AppConfigOverridesSchema = Schema.Struct({
-  targetEffectRepositoriesN: Schema.FiniteFromString.pipe(
-    Schema.check(Schema.isGreaterThan(0), Schema.isInt()),
-  ),
-
-  maximumInspectedTypescriptRepositoriesB: Schema.FiniteFromString.pipe(
+  repoSearchBudget: Schema.FiniteFromString.pipe(
     Schema.check(
       Schema.isInt(),
       Schema.isGreaterThan(0),
@@ -34,14 +30,8 @@ const AppConfigOverridesSchema = Schema.Struct({
 });
 
 const AppConfigOverridesInputSchema = Schema.Struct({
-  targetEffectRepositoriesN: Schema.optionalKey(
-    Schema.toType(AppConfigOverridesSchema.fields.targetEffectRepositoriesN),
-  ),
-
-  maximumInspectedTypescriptRepositoriesB: Schema.optionalKey(
-    Schema.toType(
-      AppConfigOverridesSchema.fields.maximumInspectedTypescriptRepositoriesB,
-    ),
+  repoSearchBudget: Schema.optionalKey(
+    Schema.toType(AppConfigOverridesSchema.fields.repoSearchBudget),
   ),
 });
 
@@ -55,20 +45,14 @@ export type AppConfigOverrides = Schema.Schema.Type<
  * Fields:
  *
  * - Required GitHub API Key with no default value.
- * - Target Effect using repositories `n` with a default value of 100.
- * - Maximum inspected repositories with TypeScript classified as the primary language;
- * with a default value of 5000.
+ * - Repo search budget with a default value of 5000.
  */
 const AppConfigSchema = Schema.Struct({
   githubApiKey: GithubApiKeySchema,
   ...AppConfigOverridesSchema.mapFields((fields) => {
     return {
-      targetEffectRepositoriesN: fields.targetEffectRepositoriesN.pipe(
-        Schema.withDecodingDefaultKey(Effect.succeed("100")),
-      ),
-
-      maximumInspectedTypescriptRepositoriesB:
-        fields.maximumInspectedTypescriptRepositoriesB.pipe(
+      repoSearchBudget:
+        fields.repoSearchBudget.pipe(
           Schema.withDecodingDefaultKey(Effect.succeed("5000")),
         ),
     };
@@ -105,16 +89,11 @@ export const makeAppConfigOverlayLayer = (
 
       return {
         ...current,
-        ...(validated.targetEffectRepositoriesN === undefined
+        ...(validated.repoSearchBudget === undefined
           ? {}
           : {
-              targetEffectRepositoriesN: validated.targetEffectRepositoriesN,
-            }),
-        ...(validated.maximumInspectedTypescriptRepositoriesB === undefined
-          ? {}
-          : {
-              maximumInspectedTypescriptRepositoriesB:
-                validated.maximumInspectedTypescriptRepositoriesB,
+              repoSearchBudget:
+                validated.repoSearchBudget,
             }),
       };
     }),
