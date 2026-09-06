@@ -92,7 +92,7 @@ export const GithubRepoSchema = Schema.Struct({
   }),
 );
 
-export type GithubRepoSchema = Schema.Schema.Type<typeof GithubRepoSchema>;
+export type GithubRepo = Schema.Schema.Type<typeof GithubRepoSchema>;
 
 export const GithubRepoSearchResponseSchema = Schema.Struct({
   totalCount: Schema.Finite,
@@ -105,4 +105,4 @@ export const GithubRepoSearchResponseSchema = Schema.Struct({
   }),
 );
 
-export type GithubRepoSearchResponseSchema = Schema.Schema.Type<typeof GithubRepoSearchResponseSchema>;
+export type GithubRepoSearchResponse = Schema.Schema.Type<typeof GithubRepoSearchResponseSchema>;
