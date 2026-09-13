@@ -8,5 +8,8 @@
   },
   "options": {
     "reportUnusedDisableDirectives": "warn"
+  },
+  "rules": {
+    "no-underscore-dangle": ["warn", { "allow": ["_tag"] }]
   }
 }

@@ -343,7 +343,11 @@ const e20r = Command.make(
             cloneStatus,
             ...(cloneError === undefined ? {} : { cloneError }),
             signals: [...signals],
-            adopter: signals.length > 0,
+            // Only direct effect dependency evidence counts as adoption;
+            // package-manager signals alone do not.
+            adopter: signals.some(
+              (s) => s._tag === "effect-in-package-json" || s._tag === "effect-version-in-catalog",
+            ),
             analyzedAt: yield* DateTime.now,
           };
 

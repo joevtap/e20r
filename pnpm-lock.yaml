@@ -14,6 +14,9 @@ importers:
       effect:
         specifier: 4.0.0-rc.110
         version: 4.0.0-rc.110
+      yaml:
+        specifier: ^2.9.1
+        version: 2.9.1
     devDependencies:
       '@effect/language-service':
         specifier: 0.87.2
@@ -921,6 +924,11 @@ packages:
       utf-8-validate:
         optional: true
 
+  yaml@2.9.1:
+    resolution: {integrity: sha512-3NxN8+78OdzbT7C/WjGsyfPAtJaN3FNDsWxv7Y7mcDsT/oOmgW8BpyQQFFBnvZE3j9Y2Sdz1ULFLezL7Eb2yFw==}
+    engines: {node: '>= 14.6'}
+    hasBin: true
+
 snapshots:
 
   '@effect/language-service@0.87.2': {}
@@ -1443,3 +1451,5 @@ snapshots:
   undici@8.9.0: {}
 
   ws@8.21.1: {}
+
+  yaml@2.9.1: {}
