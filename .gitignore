@@ -1,6 +1,7 @@
 dist
 node_modules
 *.tsbuildinfo
+.e20r/
 .repos/effect
 .repos/opencode
 .env
