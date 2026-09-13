@@ -343,10 +343,15 @@ const e20r = Command.make(
             cloneStatus,
             ...(cloneError === undefined ? {} : { cloneError }),
             signals: [...signals],
-            // Only direct effect dependency evidence counts as adoption;
-            // package-manager signals alone do not.
+            // Only direct effect dependency evidence counts as adoption:
+            // runtime dependencies, not dev-only or peer-only usage.
             adopter: signals.some(
-              (s) => s._tag === "effect-in-package-json" || s._tag === "effect-version-in-catalog",
+              (s) =>
+                s._tag === "effect-version-in-catalog" ||
+                (s._tag === "effect-in-package-json" &&
+                  s.occurrences.some(
+                    (occ) => occ.field === "dependencies" || occ.field === "optionalDependencies",
+                  )),
             ),
             analyzedAt: yield* DateTime.now,
           };
