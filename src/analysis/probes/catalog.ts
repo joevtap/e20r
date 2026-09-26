@@ -1,7 +1,7 @@
 import { Effect, Option } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import type * as Path from "effect/Path";
-import type { EffectVersion, Signal } from "../../domain/analysis.ts";
+import type { EffectVersion, Signal } from "../../domain/clone-state.ts";
 import { parsePnpmCatalogs } from "../catalog.ts";
 import { findManifests, type ManifestEntry } from "../package-json.ts";
 

@@ -1,7 +1,7 @@
 import { Effect, HashSet } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import type * as Path from "effect/Path";
-import type { EffectVersion, Signal } from "../../domain/analysis.ts";
+import type { EffectVersion, Signal } from "../../domain/clone-state.ts";
 import { effectRefs, findManifests } from "../package-json.ts";
 
 /**

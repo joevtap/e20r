@@ -1,7 +1,7 @@
 import { Array, Effect, Option } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import type * as Path from "effect/Path";
-import type { Signal } from "../../domain/analysis.ts";
+import type { Signal } from "../../domain/clone-state.ts";
 
 interface LockfileEvidence {
   readonly file: string;

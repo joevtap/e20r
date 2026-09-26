@@ -1,16 +1,20 @@
-import { Context, Effect, FileSystem, Layer, Option, Path, Schema } from "effect";
+import { Context, Effect, FileSystem, Layer, Option, Path, Schema, Schedule } from "effect";
 import type { PlatformError } from "effect/PlatformError";
 import { AppConfig } from "./config.ts";
 import { GithubRepoSchema, type GithubRepo } from "./domain/github.ts";
-import { RepoAnalysisSchema, type RepoAnalysis } from "./domain/analysis.ts";
+import { RepoCloneStateSchema, type RepoCloneState } from "./domain/clone-state.ts";
+import { EffectRepoStateSchema, type EffectRepoState } from "./domain/effect-repo.ts";
 
-// The cache files store the encoded (GitHub wire / analysis schema) form of
-// each record so they can be decoded back losslessly.
+// The cache files store the encoded (GitHub wire / state schema) form of each
+// record so they can be decoded back losslessly.
 const encodeRepo = Schema.encodeSync(GithubRepoSchema);
 const decodeRepo = Schema.decodeUnknownOption(GithubRepoSchema);
 
-const encodeAnalysis = Schema.encodeSync(RepoAnalysisSchema);
-const decodeAnalysis = Schema.decodeUnknownOption(RepoAnalysisSchema);
+const encodeCloneState = Schema.encodeSync(RepoCloneStateSchema);
+const decodeCloneState = Schema.decodeUnknownOption(RepoCloneStateSchema);
+
+const encodeEffectRepo = Schema.encodeSync(EffectRepoStateSchema);
+const decodeEffectRepo = Schema.decodeUnknownOption(EffectRepoStateSchema);
 
 const parseLine =
   <A>(decode: (value: unknown) => Option.Option<A>) =>
@@ -23,35 +27,52 @@ const parseLine =
   };
 
 const parseRepoLine = parseLine(decodeRepo);
-const parseAnalysisLine = parseLine(decodeAnalysis);
+const parseCloneStateLine = parseLine(decodeCloneState);
+const parseEffectRepoLine = parseLine(decodeEffectRepo);
 
 /**
- * Collects the ids already recorded in a JSONL file so re-runs do not append
- * duplicates. Unparseable lines are skipped. Missing files are not an error.
+ * Reads every record of a JSONL cache file. Unparseable lines are skipped.
+ * Missing files are not an error and yield an empty list.
  */
-const loadSeenIds = <A>(
+const loadRecords = <A>(
   readFileString: (path: string) => Effect.Effect<string, PlatformError>,
   file: string,
   parse: (line: string) => Option.Option<A>,
-  getId: (record: A) => number,
-): Effect.Effect<Set<number>, PlatformError> =>
+): Effect.Effect<Array<A>, PlatformError> =>
   Effect.gen(function* () {
     const contents = Option.getOrElse(yield* readFileString(file).pipe(Effect.option), () => "");
 
-    const seen = new Set<number>();
+    const records: Array<A> = [];
     for (const line of contents.split("\n")) {
       const trimmed = line.trim();
       if (trimmed === "") continue;
       Option.match(parse(trimmed), {
         onNone: () => {},
-        onSome: (record) => seen.add(getId(record)),
+        onSome: (record) => records.push(record),
       });
     }
-    return seen;
+    return records;
   });
+
+const writeWithRetry = <A>(
+  effect: Effect.Effect<A, PlatformError>,
+): Effect.Effect<A, PlatformError> =>
+  effect.pipe(Effect.retry({ times: 2, schedule: Schedule.exponential("100 millis") }));
 
 /**
  * Local on-disk cache for the data gathered by the analysis pipeline.
+ *
+ * Each pipeline stage owns one JSONL state file inside the cache root, keyed
+ * by `repoId`:
+ *
+ * - `repos.jsonl`: every repository seen by the GitHub crawl.
+ * - `clone-state.jsonl`: clone outcome and Effect-adoption selection per repo.
+ * - `effect-repos.jsonl`: repos positively selected as Effect adopters, the
+ *   hand-off to the (not yet defined) deep analysis stage.
+ *
+ * Writes are appended incrementally as records are produced, so a crash keeps
+ * completed progress on disk and the next run resumes where it stopped.
+ * Transient write failures are retried before being reported.
  *
  * When caching is disabled (`--no-cache`), the service degrades to a no-op:
  * nothing is read from disk and nothing is written, the run stays in memory.
@@ -67,22 +88,34 @@ export interface CacheDirValue {
   readonly cloneDirFor: (repo: GithubRepo) => string;
 
   /**
-   * Appends repositories to the cache file, skipping the ones already present
-   * (resume/dedupe). Returns the number of newly written entries.
+   * Appends crawled repositories to the cache file, skipping the ones already
+   * present (resume/dedupe). Returns the number of newly written entries.
    */
   readonly appendRepos: (repos: ReadonlyArray<GithubRepo>) => Effect.Effect<number, PlatformError>;
 
   /**
-   * Ids of repositories already analyzed (resume for the analysis stage).
+   * Cloning and selection state per repository id, last record winning so
+   * clone-failed records are replaced by retried runs.
    */
-  readonly analyzedIds: Effect.Effect<ReadonlySet<number>, PlatformError>;
+  readonly cloneStateById: Effect.Effect<ReadonlyMap<number, RepoCloneState>, PlatformError>;
 
   /**
-   * Appends analysis records to the cache file, skipping the ones already
-   * present (resume/dedupe). Returns the number of newly written entries.
+   * Appends clone-state records to the cache file as soon as they are
+   * produced, without dedupe: failed clones are retried on later runs and
+   * their new record supersedes the previous one (last record wins when
+   * loading). Returns the number of written entries.
    */
-  readonly appendAnalyses: (
-    analyses: ReadonlyArray<RepoAnalysis>,
+  readonly appendCloneStates: (
+    clones: ReadonlyArray<RepoCloneState>,
+  ) => Effect.Effect<number, PlatformError>;
+
+  /**
+   * Appends Effect adopter selections to the cache file, skipping the ones
+   * already present (resume/dedupe). Returns the number of newly written
+   * entries.
+   */
+  readonly appendEffectRepos: (
+    effectRepos: ReadonlyArray<EffectRepoState>,
   ) => Effect.Effect<number, PlatformError>;
 }
 
@@ -99,8 +132,9 @@ export const CacheDirLayer = Layer.effect(
         enabled: false,
         cloneDirFor: () => "",
         appendRepos: () => Effect.succeed(0),
-        analyzedIds: Effect.succeed(new Set<number>()),
-        appendAnalyses: () => Effect.succeed(0),
+        cloneStateById: Effect.succeed(new Map<number, RepoCloneState>()),
+        appendCloneStates: () => Effect.succeed(0),
+        appendEffectRepos: () => Effect.succeed(0),
       } satisfies CacheDirValue;
     }
 
@@ -110,65 +144,109 @@ export const CacheDirLayer = Layer.effect(
     const root = config.cachePath;
     const clonesDir = path.join(root, "clones");
     const reposFile = path.join(root, "repos.jsonl");
-    const analysesFile = path.join(root, "analyses.jsonl");
+    const cloneStateFile = path.join(root, "clone-state.jsonl");
+    const effectReposFile = path.join(root, "effect-repos.jsonl");
 
     yield* fs.makeDirectory(clonesDir, { recursive: true });
 
-    const seenRepos = yield* loadSeenIds(
+    // Loaded once and kept live: the append operations mutate them, so both
+    // within-run and cross-run resume see the same dedupe/state state.
+    const repoIds = new Set<number>();
+    for (const repo of yield* loadRecords(
       (file) => fs.readFileString(file),
       reposFile,
       parseRepoLine,
-      (repo) => repo.id,
-    );
+    )) {
+      repoIds.add(repo.id);
+    }
 
-    // Loaded once and kept live: `appendAnalyses` mutates it, so both
-    // within-run and cross-run resume see the same dedupe state.
-    const seenAnalyses = yield* loadSeenIds(
+    const cloneStatesById = new Map<number, RepoCloneState>();
+    for (const clone of yield* loadRecords(
       (file) => fs.readFileString(file),
-      analysesFile,
-      parseAnalysisLine,
-      (analysis) => analysis.repoId,
-    );
+      cloneStateFile,
+      parseCloneStateLine,
+    )) {
+      cloneStatesById.set(clone.repoId, clone);
+    }
 
-    const appendRecords = <A>(
+    const effectRepoIds = new Set<number>();
+    for (const effectRepo of yield* loadRecords(
+      (file) => fs.readFileString(file),
+      effectReposFile,
+      parseEffectRepoLine,
+    )) {
+      effectRepoIds.add(effectRepo.repoId);
+    }
+
+    /**
+     * Appends records to a JSONL file, skipping the ids already seen and
+     * updating the live id bookkeeping. A single `a+` write per batch keeps
+     * concurrent appends line-atomic.
+     */
+    const appendNewRecords = <A>(
       file: string,
-      seen: Set<number>,
+      seenIds: Set<number>,
       records: ReadonlyArray<A>,
       encode: (record: A) => unknown,
       getId: (record: A) => number,
     ): Effect.Effect<number, PlatformError> =>
       Effect.gen(function* () {
-        const fresh = records.filter((record) => !seen.has(getId(record)));
+        const fresh = records.filter((record) => !seenIds.has(getId(record)));
         if (fresh.length === 0) return 0;
 
         const payload = fresh.map((record) => JSON.stringify(encode(record))).join("\n");
 
-        yield* fs.writeFileString(file, `${payload}\n`, {
-          flag: "a+",
-        });
+        yield* writeWithRetry(
+          fs.writeFileString(file, `${payload}\n`, {
+            flag: "a+",
+          }),
+        );
 
         for (const record of fresh) {
-          seen.add(getId(record));
+          seenIds.add(getId(record));
         }
 
         return fresh.length;
+      });
+
+    const appendCloneStates = (
+      clones: ReadonlyArray<RepoCloneState>,
+    ): Effect.Effect<number, PlatformError> =>
+      Effect.gen(function* () {
+        if (clones.length === 0) return 0;
+
+        const payload = clones.map((clone) => JSON.stringify(encodeCloneState(clone))).join("\n");
+
+        yield* writeWithRetry(
+          fs.writeFileString(cloneStateFile, `${payload}\n`, {
+            flag: "a+",
+          }),
+        );
+
+        for (const clone of clones) {
+          cloneStatesById.set(clone.repoId, clone);
+        }
+
+        return clones.length;
       });
 
     return {
       root,
       enabled: true,
       cloneDirFor: (repo) => path.join(clonesDir, ...repo.fullName.split("/")),
+
       appendRepos: (repos) =>
-        appendRecords(reposFile, seenRepos, repos, encodeRepo, (repo) => repo.id),
-      analyzedIds: Effect.succeed(seenAnalyses),
-      appendAnalyses: (analyses) =>
-        appendRecords(
-          analysesFile,
-          seenAnalyses,
-          analyses,
-          encodeAnalysis,
-          (analysis) => analysis.repoId,
+        appendNewRecords(reposFile, repoIds, repos, encodeRepo, (repo) => repo.id),
+      appendEffectRepos: (effectRepos) =>
+        appendNewRecords(
+          effectReposFile,
+          effectRepoIds,
+          effectRepos,
+          encodeEffectRepo,
+          (effectRepo) => effectRepo.repoId,
         ),
+      cloneStateById: Effect.succeed(cloneStatesById),
+      appendCloneStates,
     } satisfies CacheDirValue;
   }),
 );

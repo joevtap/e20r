@@ -2,7 +2,7 @@ import { Array, Effect } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import type * as Path from "effect/Path";
 import type { GithubRepo } from "../domain/github.ts";
-import type { Signal } from "../domain/analysis.ts";
+import type { Signal } from "../domain/clone-state.ts";
 import { effectPackageJsonProbe } from "./probes/effect-package-json.ts";
 import { bunCatalogProbe, pnpmCatalogProbe } from "./probes/catalog.ts";
 import { packageManagerProbe } from "./probes/package-manager.ts";

@@ -1,7 +1,7 @@
 import { Effect, Path, Schema } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import { Array, Option, String } from "effect";
-import type { EffectVersion } from "../domain/analysis.ts";
+import type { EffectVersion } from "../domain/clone-state.ts";
 
 /**
  * The subset of a `package.json` manifest this application cares about.

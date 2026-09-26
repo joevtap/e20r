@@ -15,8 +15,8 @@ export const EffectVersionSchema = Schema.String.check(Schema.isNonEmpty()).pipe
 export type EffectVersion = Schema.Schema.Type<typeof EffectVersionSchema>;
 
 /**
- * A detected evidence of a fact about the analyzed repository. Signals are
- * gathered by probes; a probe returns zero or more signals.
+ * A detected evidence of a fact about the cloned repository. Signals are
+ * gathered by selection probes; a probe returns zero or more signals.
  */
 export const SignalSchema = Schema.Union([
   Schema.TaggedStruct("effect-in-package-json", {
@@ -52,17 +52,48 @@ export const SignalSchema = Schema.Union([
 export type Signal = Schema.Schema.Type<typeof SignalSchema>;
 
 /**
- * The outcome of cloning and analyzing one repository. Records are appended
- * to `analyses.jsonl` and keyed by `repoId` for resume.
+ * The state of cloning one repository and selecting it as an Effect adopter:
+ * the clone outcome, the commit hash actually cloned, the selection signals
+ * gathered by the probes, and the resulting adoption decision. Records are
+ * appended to `clone-state.jsonl` and keyed by `repoId` for resume; failed
+ * clones are retried on later runs.
  */
-export const RepoAnalysisSchema = Schema.Struct({
+export const RepoCloneStateSchema = Schema.Struct({
   repoId: Schema.Finite,
   fullName: Schema.String,
   cloneStatus: CloneStatusSchema,
   cloneError: Schema.optionalKey(Schema.String),
+
+  /**
+   * Commit hash of the cloned HEAD (`git rev-parse HEAD` on the clone), so a
+   * recorded state always pins the exact snapshot it describes. Absent while
+   * the clone failed.
+   */
+  commit: Schema.optionalKey(Schema.String),
+
   signals: Schema.Array(SignalSchema),
+
+  /**
+   * Adoption selection: true only for direct Effect runtime dependencies
+   * (dependencies/optionalDependencies, or a catalog reference).
+   */
   adopter: Schema.Boolean,
-  analyzedAt: Schema.DateTimeUtcFromString,
+
+  recordedAt: Schema.DateTimeUtcFromString,
 });
 
-export type RepoAnalysis = Schema.Schema.Type<typeof RepoAnalysisSchema>;
+export type RepoCloneState = Schema.Schema.Type<typeof RepoCloneStateSchema>;
+
+/**
+ * Only direct `effect` dependency evidence counts as adoption: runtime
+ * dependencies and catalog references, not dev-only or peer-only usage.
+ */
+export const isEffectAdopter = (signals: ReadonlyArray<Signal>): boolean =>
+  signals.some(
+    (s) =>
+      s._tag === "effect-version-in-catalog" ||
+      (s._tag === "effect-in-package-json" &&
+        s.occurrences.some(
+          (occ) => occ.field === "dependencies" || occ.field === "optionalDependencies",
+        )),
+  );

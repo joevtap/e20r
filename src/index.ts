@@ -15,9 +15,10 @@ import {
 } from "effect";
 import { AppConfig, AppConfigLayer, makeAppConfigOverlayLayer } from "./config.ts";
 import { CacheDir, CacheDirLayer } from "./cache.ts";
-import { cloneRepo } from "./github/clone.ts";
+import { ensureCloned } from "./github/clone.ts";
 import { analyzeRepo } from "./analysis/probe.ts";
-import type { RepoAnalysis } from "./domain/analysis.ts";
+import { isEffectAdopter, type RepoCloneState } from "./domain/clone-state.ts";
+import type { EffectRepoState } from "./domain/effect-repo.ts";
 import {
   FetchHttpClient,
   Headers,
@@ -174,7 +175,7 @@ const e20r = Command.make(
       }
 
       // Search progress for logging
-      const stats = { pages: 0, items: 0 };
+      const stats = { pages: 0, items: 0, cached: 0 };
 
       const repos = Stream.paginate(
         {
@@ -192,6 +193,11 @@ const e20r = Command.make(
 
                 stats.pages++;
                 stats.items += body.items.length;
+
+                // Cache each page as it arrives instead of only at the end of
+                // the crawl: a crash mid-crawl keeps the gathered repositories
+                // on disk, and already-cached ids are appended only once.
+                stats.cached += yield* cache.appendRepos(body.items);
 
                 const lastSeenStars = Option.orElse(
                   Option.map(Array.last(body.items), (repo) => repo.stargazersCount),
@@ -287,92 +293,139 @@ const e20r = Command.make(
           `keeping top ${config.repoSearchBudget}.`,
       );
 
-      const written = yield* cache.appendRepos(topRepos);
-
       yield* Effect.log(
         cache.enabled
-          ? `Cached ${written} new repositories in ${cache.root}`
+          ? `Crawl cached ${stats.cached} new repositories in ${cache.root}`
           : "Cache disabled; results kept in memory only",
       );
 
       // TODO: add a mode that skips the GitHub search and loads the top
       // repositories from the cache file instead of re-crawling every run.
 
-      const analyzedIds = yield* cache.analyzedIds;
-      const previouslyAnalyzed = analyzedIds.size;
+      const cloneStatesById = yield* cache.cloneStateById;
+      const previouslyRecorded = Array.filter(
+        topRepos,
+        (repo) => cloneStatesById.get(repo.id)?.cloneStatus === "cloned",
+      ).length;
 
-      // Resume tiers per repository:
-      // 1. analyzed before -> skip entirely
-      // 2. clone dir exists, not analyzed -> reuse clone, run probes
-      // 3. neither -> clone, run probes
-      let reusedClones = 0;
+      // Resume per repository, keyed by the clone-state cache:
+      // 1. recorded as cloned -> skip entirely (probes already ran)
+      // 2. recorded as clone-failed -> retriable: retry clone and probes
+      // 3. not recorded -> clone and probe from scratch
       let freshClones = 0;
+      let reusedClones = 0;
       let cloneFailures = 0;
 
-      const analyses = yield* Effect.forEach(
+      // Selections of Effect adopters. Appended to their own cache file only
+      // for the (not yet defined) deep analysis stage of effect-using repos.
+      const effectRepos: Array<EffectRepoState> = [];
+      let effectReposLost = 0;
+
+      const recordCloneState = (cloneState: RepoCloneState): Effect.Effect<boolean> =>
+        Effect.gen(function* () {
+          // A hard failure to record is logged and carried on with: the run
+          // keeps working, and the repo's missing record makes the next run
+          // retry it (per-repo resume is keyed on the recorded state).
+          const written = yield* cache.appendCloneStates([cloneState]).pipe(Effect.option);
+          if (Option.isNone(written)) {
+            yield* Effect.logWarning(
+              `Failed to record clone state of ${cloneState.fullName} after retries`,
+            );
+            return false;
+          }
+          return written.value > 0;
+        });
+
+      const clonedRepos = yield* Effect.forEach(
         topRepos,
-        Effect.fn("clone-and-analyze")(function* (repo: GithubRepo) {
-          if (analyzedIds.has(repo.id)) {
+        Effect.fn("clone-and-select")(function* (repo: GithubRepo) {
+          if (cloneStatesById.get(repo.id)?.cloneStatus === "cloned") {
             return undefined;
           }
 
           const cloneDir = cache.cloneDirFor(repo);
           const fs = yield* FileSystem.FileSystem;
 
-          let cloneStatus: RepoAnalysis["cloneStatus"] = "cloned";
-          let cloneError: string | undefined = undefined;
+          const outcome = yield* ensureCloned(repo, cloneDir).pipe(Effect.result);
 
-          if (yield* fs.exists(cloneDir)) {
-            reusedClones++;
-          } else {
-            const result = yield* cloneRepo(repo, cloneDir).pipe(Effect.result);
-            if (Result.isFailure(result)) {
-              cloneFailures++;
-              cloneStatus = "clone-failed";
-              cloneError = Option.getOrUndefined(Result.getFailure(result));
-            } else {
-              freshClones++;
-            }
+          if (Result.isFailure(outcome)) {
+            cloneFailures++;
+            const cloneError = Option.getOrUndefined(Result.getFailure(outcome));
+            const cloneState: RepoCloneState = {
+              repoId: repo.id,
+              fullName: repo.fullName,
+              cloneStatus: "clone-failed",
+              ...(cloneError === undefined ? {} : { cloneError }),
+              signals: [],
+              adopter: false,
+              recordedAt: yield* DateTime.now,
+            };
+            yield* recordCloneState(cloneState);
+            return cloneState;
           }
 
-          const signals = cloneStatus === "cloned" ? yield* analyzeRepo(cloneDir, repo) : [];
+          if (outcome.success.fresh) {
+            freshClones++;
+          } else {
+            reusedClones++;
+          }
 
-          const analysis: RepoAnalysis = {
+          const signals = yield* analyzeRepo(cloneDir, repo);
+
+          const cloneState: RepoCloneState = {
             repoId: repo.id,
             fullName: repo.fullName,
-            cloneStatus,
-            ...(cloneError === undefined ? {} : { cloneError }),
+            cloneStatus: "cloned",
+            commit: outcome.success.commit,
             signals: [...signals],
             // Only direct effect dependency evidence counts as adoption:
             // runtime dependencies, not dev-only or peer-only usage.
-            adopter: signals.some(
-              (s) =>
-                s._tag === "effect-version-in-catalog" ||
-                (s._tag === "effect-in-package-json" &&
-                  s.occurrences.some(
-                    (occ) => occ.field === "dependencies" || occ.field === "optionalDependencies",
-                  )),
-            ),
-            analyzedAt: yield* DateTime.now,
+            adopter: isEffectAdopter(signals),
+            recordedAt: yield* DateTime.now,
           };
 
-          if (config.ephemeral && cloneStatus === "cloned") {
-            yield* fs.remove(cloneDir, { recursive: true, force: true });
+          const wasRecorded = yield* recordCloneState(cloneState);
+
+          const { commit } = cloneState;
+          if (cloneState.adopter && commit !== undefined) {
+            effectRepos.push({
+              repoId: repo.id,
+              fullName: repo.fullName,
+              defaultBranch: repo.defaultBranch,
+              commit,
+              recordedAt: cloneState.recordedAt,
+            });
+            if (!wasRecorded) effectReposLost++;
           }
 
-          return analysis;
+          // Clones are deleted only once their state is durably recorded;
+          // otherwise the next run would have to re-clone anyway.
+          if (wasRecorded && config.ephemeral) {
+            yield* Effect.ignore(fs.remove(cloneDir, { recursive: true, force: true }));
+          }
+
+          return cloneState;
         }),
         { concurrency: config.cloneConcurrency },
       );
 
-      const recorded = analyses.filter((a) => a !== undefined) as RepoAnalysis[];
+      const recordedStates = clonedRepos.filter((clone) => clone !== undefined) as RepoCloneState[];
 
-      yield* cache.appendAnalyses(recorded);
+      if (effectRepos.length > 0) {
+        const written = yield* cache.appendEffectRepos(effectRepos).pipe(Effect.option);
+        if (Option.isNone(written)) {
+          yield* Effect.logWarning(
+            `Failed to record ${effectRepos.length} Effect adopter selections after retries`,
+          );
+        }
+      }
 
       yield* Effect.log(
-        `Analyzed ${recorded.length} repositories ` +
-          `(${previouslyAnalyzed} already done, ${freshClones} fresh clones, ${reusedClones} reused, ${cloneFailures} clone failures); ` +
-          `${recorded.filter((a) => a.adopter).length} Effect adopters.`,
+        `Recorded ${recordedStates.length} repositories ` +
+          `(${previouslyRecorded} already recorded, ${freshClones} fresh clones, ${reusedClones} reused, ` +
+          `${cloneFailures} clone failures); ` +
+          `${recordedStates.filter((clone) => clone.adopter).length} Effect adopters` +
+          `${effectReposLost > 0 ? `, ${effectReposLost} adopter selections not recorded` : ""}.`,
       );
     }),
 ).pipe(
