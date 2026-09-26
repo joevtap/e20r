@@ -100,6 +100,12 @@ export interface CacheDirValue {
   readonly cloneStateById: Effect.Effect<ReadonlyMap<number, RepoCloneState>, PlatformError>;
 
   /**
+   * Crawled repositories per repository id (last record winning), so resumed
+   * runs can reconstruct records that only reference a repo id.
+   */
+  readonly reposById: Effect.Effect<ReadonlyMap<number, GithubRepo>, PlatformError>;
+
+  /**
    * Appends clone-state records to the cache file as soon as they are
    * produced, without dedupe: failed clones are retried on later runs and
    * their new record supersedes the previous one (last record wins when
@@ -143,6 +149,7 @@ export const CacheDirLayer = Layer.effect(
           cloneDirFor: (repo) => path.join(tempRoot, "clones", ...repo.fullName.split("/")),
           appendRepos: () => Effect.succeed(0),
           cloneStateById: Effect.succeed(new Map<number, RepoCloneState>()),
+          reposById: Effect.succeed(new Map<number, GithubRepo>()),
           appendCloneStates: () => Effect.succeed(0),
           appendEffectRepos: () => Effect.succeed(0),
         } satisfies CacheDirValue;
@@ -162,12 +169,14 @@ export const CacheDirLayer = Layer.effect(
 
     // Loaded once and kept live: the append operations mutate them, so both
     // within-run and cross-run resume see the same dedupe/state state.
+    const reposById = new Map<number, GithubRepo>();
     const repoIds = new Set<number>();
     for (const repo of yield* loadRecords(
       (file) => fs.readFileString(file),
       reposFile,
       parseRepoLine,
     )) {
+      reposById.set(repo.id, repo);
       repoIds.add(repo.id);
     }
 
@@ -257,6 +266,7 @@ export const CacheDirLayer = Layer.effect(
           (effectRepo) => effectRepo.repoId,
         ),
       cloneStateById: Effect.succeed(cloneStatesById),
+      reposById: Effect.succeed(reposById),
       appendCloneStates,
     } satisfies CacheDirValue;
   }),

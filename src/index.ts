@@ -316,8 +316,42 @@ const e20r = Command.make(
       let reusedClones = 0;
       let cloneFailures = 0;
 
-      // Selections of Effect adopters. Appended to their own cache file only
-      // for the (not yet defined) deep analysis stage of effect-using repos.
+      // Selections of Effect adopters for the deep-analysis stage (its probes
+      // and signals are not defined yet), appended to their own state file.
+      const reposById = yield* cache.reposById;
+
+      // A previous run may have recorded the adopter state but failed to
+      // append the selection hand-off (disk full, crash): selections of
+      // already-recorded adopters are re-attempted on resume, and the
+      // append dedupe makes re-attempts idempotent.
+      const recoveredSelections: Array<EffectRepoState> = [];
+      for (const cloneState of cloneStatesById.values()) {
+        const repo = reposById.get(cloneState.repoId);
+        if (
+          cloneState.cloneStatus === "cloned" &&
+          cloneState.adopter &&
+          cloneState.commit !== undefined &&
+          repo !== undefined
+        ) {
+          recoveredSelections.push({
+            repoId: cloneState.repoId,
+            fullName: cloneState.fullName,
+            defaultBranch: repo.defaultBranch,
+            commit: cloneState.commit,
+            recordedAt: cloneState.recordedAt,
+          });
+        }
+      }
+
+      if (recoveredSelections.length > 0) {
+        const recovered = yield* cache.appendEffectRepos(recoveredSelections).pipe(Effect.option);
+        yield* Effect.log(
+          Option.isNone(recovered)
+            ? `Failed to recover ${recoveredSelections.length} prior Effect adopter selections`
+            : `Recovered ${recovered.value} prior Effect adopter selections`,
+        );
+      }
+
       const effectRepos: Array<EffectRepoState> = [];
       let effectReposLost = 0;
 
