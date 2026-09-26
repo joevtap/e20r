@@ -127,15 +127,26 @@ export const CacheDirLayer = Layer.effect(
     const config = yield* AppConfig;
 
     if (config.noCache) {
-      return {
-        root: "",
-        enabled: false,
-        cloneDirFor: () => "",
-        appendRepos: () => Effect.succeed(0),
-        cloneStateById: Effect.succeed(new Map<number, RepoCloneState>()),
-        appendCloneStates: () => Effect.succeed(0),
-        appendEffectRepos: () => Effect.succeed(0),
-      } satisfies CacheDirValue;
+      // Without a cache there is no clone directory to reuse, so clones live
+      // in a throwaway temporary directory for the duration of the run: the
+      // scoped temp directory is removed when the layer's scope closes
+      // (analyses never outlive the run in this mode).
+      return yield* Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const tempRoot = yield* fs.makeTempDirectoryScoped({ prefix: "e20r-nocache-" });
+        yield* fs.makeDirectory(path.join(tempRoot, "clones"), { recursive: true });
+
+        return {
+          root: tempRoot,
+          enabled: false,
+          cloneDirFor: (repo) => path.join(tempRoot, "clones", ...repo.fullName.split("/")),
+          appendRepos: () => Effect.succeed(0),
+          cloneStateById: Effect.succeed(new Map<number, RepoCloneState>()),
+          appendCloneStates: () => Effect.succeed(0),
+          appendEffectRepos: () => Effect.succeed(0),
+        } satisfies CacheDirValue;
+      });
     }
 
     const fs = yield* FileSystem.FileSystem;
