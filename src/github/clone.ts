@@ -146,6 +146,50 @@ const revParseHead = (
     Effect.retry({ times: 2, schedule: Schedule.exponential("1 second") }),
   );
 
+/**
+ * Whether the clone's worktree matches its HEAD exactly: `git diff-index
+ * --quiet HEAD` exits non-zero on any missing or modified tracked file.
+ *
+ * A clone killed mid-checkout still has a resolvable HEAD but an incomplete
+ * worktree, so a resolved HEAD alone must not be trusted; a worktree
+ * difference means the clone is partial and has to be re-cloned.
+ */
+const isWorktreeComplete = (
+  cloneDir: string,
+): Effect.Effect<boolean, string, ChildProcessSpawner.ChildProcessSpawner> =>
+  Effect.gen(function* () {
+    const output = yield* gitOutput([
+      "-C",
+      cloneDir,
+      "diff-index",
+      "--quiet",
+      "--ignore-submodules=all",
+      "HEAD",
+      "--",
+    ]);
+    return output.exitCode === 0;
+  }).pipe(Effect.scoped);
+
+/**
+ * The HEAD commit of an existing clone if and only if the clone is complete
+ * and usable: its HEAD resolves and its worktree matches it exactly (a run
+ * killed mid-checkout leaves a resolvable HEAD over a partial worktree).
+ * Returns `Option.none()` for anything unusable.
+ */
+const usableCommit = (
+  cloneDir: string,
+): Effect.Effect<Option.Option<string>, never, ChildProcessSpawner.ChildProcessSpawner> =>
+  Effect.gen(function* () {
+    const commit = yield* revParseHead(cloneDir).pipe(Effect.option);
+    if (Option.isNone(commit)) return Option.none();
+
+    const complete = yield* isWorktreeComplete(cloneDir).pipe(
+      Effect.option,
+      Effect.map(Option.getOrElse(() => false)),
+    );
+    return complete ? commit : Option.none();
+  });
+
 export interface CloneOutcome {
   /** The commit hash of the cloned HEAD, from `git rev-parse HEAD`. */
   readonly commit: string;
@@ -198,9 +242,12 @@ export const ensureCloned = (
       return { commit: yield* revParseHead(cloneDir), fresh: true } satisfies CloneOutcome;
     }
 
-    // Reuse the existing clone when its HEAD resolves; otherwise it is
-    // missing or corrupt, so remove it and clone again.
-    const reusedCommit = yield* revParseHead(cloneDir).pipe(Effect.option);
+    // Reuse the existing clone only when its HEAD resolves and its worktree
+    // is complete; a run killed mid-checkout leaves a resolvable HEAD over a
+    // partial worktree, which would poison the probes. Anything unusable is
+    // removed and cloned again, so the run can never get stuck on a broken
+    // directory from a previous run.
+    const reusedCommit = yield* usableCommit(cloneDir);
 
     if (Option.isSome(reusedCommit)) {
       return { commit: reusedCommit.value, fresh: false } satisfies CloneOutcome;

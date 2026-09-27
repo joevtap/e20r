@@ -1,11 +1,13 @@
 {
   "$schema": "https://raw.githubusercontent.com/Effect-TS/tsgo/refs/heads/main/schema.json",
   // Visit https://aka.ms/tsconfig to read more about this file
+  // Only `src` is built; ad-hoc test scripts live in `scripts/` and are run
+  // with tsx, not compiled.
+  "include": ["src"],
   "compilerOptions": {
     // File Layout
     "rootDir": "./src",
     "outDir": "./dist",
-
     // Environment Settings
     // See also https://aka.ms/tsconfig/module
     "module": "nodenext",
