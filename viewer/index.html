@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>e20r state viewer</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>e20r state viewer</h1>
+      <p class="subtitle">
+        Local-only viewer for <code>clone-state.jsonl</code>, <code>effect-repos.jsonl</code> and
+        <code>repos.jsonl</code>. Files are read in your browser and never uploaded anywhere.
+      </p>
+
+      <div id="drop-zone">
+        <input id="file-input" type="file" multiple accept=".jsonl,.json,.txt,.ndjson" />
+        <p>Drop <code>.jsonl</code> files here, or use the picker above.</p>
+      </div>
+
+      <div id="file-summary" class="toolbar"></div>
+      <button id="clear-btn" type="button">Clear loaded data</button>
+    </header>
+
+    <section id="stats" class="panel"></section>
+
+    <section id="filters" class="panel">
+      <h2>Filters</h2>
+      <div class="filter-row">
+        <label>
+          Search
+          <input id="search-input" type="search" placeholder="name, commit, error, signal…" />
+        </label>
+        <label>
+          Record type
+          <select id="type-select">
+            <option value="all">all types</option>
+          </select>
+        </label>
+        <label>
+          Clone status
+          <select id="status-select">
+            <option value="all">any</option>
+            <option value="cloned">cloned</option>
+            <option value="clone-failed">clone-failed</option>
+          </select>
+        </label>
+        <label>
+          Adopter
+          <select id="adopter-select">
+            <option value="all">any</option>
+            <option value="yes">adopters only</option>
+            <option value="no">non-adopters only</option>
+          </select>
+        </label>
+      </div>
+      <div id="signal-filters" class="filter-row"></div>
+    </section>
+
+    <main>
+      <section id="tables"></section>
+      <aside id="detail" class="panel" hidden>
+        <h2>Record detail</h2>
+        <div id="detail-body"></div>
+      </aside>
+    </main>
+
+    <section id="problems" class="panel"></section>
+
+    <!-- Plain scripts, in order, sharing the window.Viz namespace.
+         See README.md for the extension points. -->
+    <script src="records.js" defer></script>
+    <script src="signals.js" defer></script>
+    <script src="app.js" defer></script>
+  </body>
+</html>

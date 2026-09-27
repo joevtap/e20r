@@ -294,7 +294,7 @@ const e20r = Command.make(
       // repositories from the crawl cache; the search stream below is only
       // pulled when a fresh crawl is wanted.
       const collectedRepos = config.fromCache
-        ? yield* Effect.map(cache.reposById, (repos) => [...repos.values()])
+        ? yield* Effect.map(cache.reposById, (cached) => [...cached.values()])
         : yield* uniqueRepos.pipe(
             Stream.throttle({ cost: () => 1, units: 1, duration: "3 seconds" }),
             Stream.takeWhile((repo) => {
