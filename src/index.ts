@@ -64,6 +64,18 @@ const e20r = Command.make(
       Flag.withDescription("Number of repositories cloned and analyzed in parallel"),
       Flag.optional,
     ),
+    clean: Flag.boolean("clean").pipe(
+      Flag.withDescription("Wipe the cache state and clones before the run starts"),
+      Flag.optional,
+    ),
+    fresh: Flag.boolean("fresh").pipe(
+      Flag.withDescription("Re-process every repository even if its state is already recorded"),
+      Flag.optional,
+    ),
+    fromCache: Flag.boolean("from-cache").pipe(
+      Flag.withDescription("Skip the GitHub search and select the top repositories from the cache"),
+      Flag.optional,
+    ),
   },
   // Flag values flow into the handler through the AppConfig overlay layer
   // provided below, not as direct arguments.
@@ -177,6 +189,10 @@ const e20r = Command.make(
       // Search progress for logging
       const stats = { pages: 0, items: 0, cached: 0 };
 
+      // Crawled repositories of previous runs: the source of the
+      // --from-cache selection and of the resumed adopter selections below.
+      const reposById = yield* cache.reposById;
+
       const repos = Stream.paginate(
         {
           url: buildSearchUrl(),
@@ -274,51 +290,58 @@ const e20r = Command.make(
       let collected = 0;
       let cutOffStars = 0;
 
-      const collectedRepos = yield* uniqueRepos.pipe(
-        Stream.throttle({ cost: () => 1, units: 1, duration: "3 seconds" }),
-        Stream.takeWhile((repo) => {
-          collected++;
-          if (collected === config.repoSearchBudget) cutOffStars = repo.stargazersCount;
-          return collected <= config.repoSearchBudget || repo.stargazersCount >= cutOffStars;
-        }),
-        Stream.runCollect,
-      );
+      // --from-cache skips the GitHub search entirely and selects the top
+      // repositories from the crawl cache; the search stream below is only
+      // pulled when a fresh crawl is wanted.
+      const collectedRepos = config.fromCache
+        ? yield* Effect.map(cache.reposById, (repos) => [...repos.values()])
+        : yield* uniqueRepos.pipe(
+            Stream.throttle({ cost: () => 1, units: 1, duration: "3 seconds" }),
+            Stream.takeWhile((repo) => {
+              collected++;
+              if (collected === config.repoSearchBudget) cutOffStars = repo.stargazersCount;
+              return collected <= config.repoSearchBudget || repo.stargazersCount >= cutOffStars;
+            }),
+            Stream.runCollect,
+          );
 
       // Sort the whole collected set by the total order, then keep the top N.
       const topRepos = Array.take(Array.sort(repoOrder)(collectedRepos), config.repoSearchBudget);
 
       yield* Effect.log(
-        `Crawled ${stats.pages} pages: ${collectedRepos.length} unique repositories ` +
-          `(${stats.items - collectedRepos.length} boundary re-listings skipped), cut-off at ★${cutOffStars}; ` +
-          `keeping top ${config.repoSearchBudget}.`,
+        config.fromCache
+          ? `Selected ${topRepos.length} of ${collectedRepos.length} cached repositories; keeping top ${config.repoSearchBudget}.`
+          : `Crawled ${stats.pages} pages: ${collectedRepos.length} unique repositories ` +
+              `(${stats.items - collectedRepos.length} boundary re-listings skipped), cut-off at ★${cutOffStars}; ` +
+              `keeping top ${config.repoSearchBudget}.`,
       );
 
-      yield* Effect.log(
-        cache.enabled
-          ? `Crawl cached ${stats.cached} new repositories in ${cache.root}`
-          : "Cache disabled; results kept in memory only",
-      );
-
-      // TODO: add a mode that skips the GitHub search and loads the top
-      // repositories from the cache file instead of re-crawling every run.
+      if (!config.fromCache) {
+        yield* Effect.log(
+          cache.enabled
+            ? `Crawl cached ${stats.cached} new repositories in ${cache.root}`
+            : "Cache disabled; results kept in memory only",
+        );
+      }
 
       const cloneStatesById = yield* cache.cloneStateById;
-      const previouslyRecorded = Array.filter(
-        topRepos,
-        (repo) => cloneStatesById.get(repo.id)?.cloneStatus === "cloned",
-      ).length;
+      // --fresh re-processes everything, so nothing counts as already done.
+      const previouslyRecorded = config.fresh
+        ? 0
+        : Array.filter(topRepos, (repo) => cloneStatesById.get(repo.id)?.cloneStatus === "cloned")
+            .length;
 
       // Resume per repository, keyed by the clone-state cache:
       // 1. recorded as cloned -> skip entirely (probes already ran)
       // 2. recorded as clone-failed -> retriable: retry clone and probes
       // 3. not recorded -> clone and probe from scratch
+      // (--fresh ignores the recorded state and re-runs every repository.)
       let freshClones = 0;
       let reusedClones = 0;
       let cloneFailures = 0;
 
       // Selections of Effect adopters for the deep-analysis stage (its probes
       // and signals are not defined yet), appended to their own state file.
-      const reposById = yield* cache.reposById;
 
       // A previous run may have recorded the adopter state but failed to
       // append the selection hand-off (disk full, crash): selections of
@@ -373,7 +396,8 @@ const e20r = Command.make(
       const clonedRepos = yield* Effect.forEach(
         topRepos,
         Effect.fn("clone-and-select")(function* (repo: GithubRepo) {
-          if (cloneStatesById.get(repo.id)?.cloneStatus === "cloned") {
+          // --fresh re-processes recorded repositories as well.
+          if (!config.fresh && cloneStatesById.get(repo.id)?.cloneStatus === "cloned") {
             return undefined;
           }
 
@@ -463,38 +487,60 @@ const e20r = Command.make(
       );
     }),
 ).pipe(
-  Command.provide(({ repoSearchBudget, cachePath, noCache, ephemeral, cloneConcurrency }) =>
-    // Services derived from AppConfig (CacheDir) must be built from the
-    // flag-overlaid config, so the AppConfig chain lives inside this provide
-    // instead of the outer CliLayer. `Layer.provide` feeds the overlaid
-    // config into CacheDir; NodeServices supplies FileSystem/Path/etc.
-    CacheDirLayer.pipe(
-      Layer.provideMerge(
-        makeAppConfigOverlayLayer({
-          ...Option.match(repoSearchBudget, {
-            onNone: () => {},
-            onSome: (value) => ({ repoSearchBudget: value }),
-          }),
-          ...Option.match(cachePath, {
-            onNone: () => {},
-            onSome: (value) => ({ cachePath: value }),
-          }),
-          ...Option.match(noCache, {
-            onNone: () => {},
-            onSome: (value) => ({ noCache: value }),
-          }),
-          ...Option.match(ephemeral, {
-            onNone: () => {},
-            onSome: (value) => ({ ephemeral: value }),
-          }),
-          ...Option.match(cloneConcurrency, {
-            onNone: () => {},
-            onSome: (value) => ({ cloneConcurrency: value }),
-          }),
-        }).pipe(Layer.provide(AppConfigLayer)),
+  Command.provide(
+    ({
+      repoSearchBudget,
+      cachePath,
+      noCache,
+      ephemeral,
+      cloneConcurrency,
+      clean,
+      fresh,
+      fromCache,
+    }) =>
+      // Services derived from AppConfig (CacheDir) must be built from the
+      // flag-overlaid config, so the AppConfig chain lives inside this provide
+      // instead of the outer CliLayer. `Layer.provide` feeds the overlaid
+      // config into CacheDir; NodeServices supplies FileSystem/Path/etc.
+      CacheDirLayer.pipe(
+        Layer.provideMerge(
+          makeAppConfigOverlayLayer({
+            ...Option.match(repoSearchBudget, {
+              onNone: () => {},
+              onSome: (value) => ({ repoSearchBudget: value }),
+            }),
+            ...Option.match(cachePath, {
+              onNone: () => {},
+              onSome: (value) => ({ cachePath: value }),
+            }),
+            ...Option.match(noCache, {
+              onNone: () => {},
+              onSome: (value) => ({ noCache: value }),
+            }),
+            ...Option.match(ephemeral, {
+              onNone: () => {},
+              onSome: (value) => ({ ephemeral: value }),
+            }),
+            ...Option.match(cloneConcurrency, {
+              onNone: () => {},
+              onSome: (value) => ({ cloneConcurrency: value }),
+            }),
+            ...Option.match(clean, {
+              onNone: () => {},
+              onSome: (value) => ({ clean: value }),
+            }),
+            ...Option.match(fresh, {
+              onNone: () => {},
+              onSome: (value) => ({ fresh: value }),
+            }),
+            ...Option.match(fromCache, {
+              onNone: () => {},
+              onSome: (value) => ({ fromCache: value }),
+            }),
+          }).pipe(Layer.provide(AppConfigLayer)),
+        ),
+        Layer.provideMerge(NodeServices.layer),
       ),
-      Layer.provideMerge(NodeServices.layer),
-    ),
   ),
 );
 

@@ -165,6 +165,16 @@ export const CacheDirLayer = Layer.effect(
     const cloneStateFile = path.join(root, "clone-state.jsonl");
     const effectReposFile = path.join(root, "effect-repos.jsonl");
 
+    // --clean starts the run from an empty cache: every state file and every
+    // clone is removed before anything is loaded, so the run re-derives all
+    // state from scratch instead of resuming.
+    if (config.clean) {
+      for (const file of [reposFile, cloneStateFile, effectReposFile]) {
+        yield* Effect.ignore(fs.remove(file, { force: true }));
+      }
+      yield* Effect.ignore(fs.remove(clonesDir, { recursive: true, force: true }));
+    }
+
     yield* fs.makeDirectory(clonesDir, { recursive: true });
 
     // Loaded once and kept live: the append operations mutate them, so both

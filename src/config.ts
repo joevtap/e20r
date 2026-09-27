@@ -37,6 +37,9 @@ const AppConfigOverridesSchema = Schema.Struct({
   cloneConcurrency: Schema.FiniteFromString.pipe(
     Schema.check(Schema.isInt(), Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(64)),
   ),
+  clean: Schema.Boolean,
+  fresh: Schema.Boolean,
+  fromCache: Schema.Boolean,
 });
 
 const AppConfigOverridesInputSchema = Schema.Struct({
@@ -49,6 +52,9 @@ const AppConfigOverridesInputSchema = Schema.Struct({
   cloneConcurrency: Schema.optionalKey(
     Schema.toType(AppConfigOverridesSchema.fields.cloneConcurrency),
   ),
+  clean: Schema.optionalKey(Schema.toType(AppConfigOverridesSchema.fields.clean)),
+  fresh: Schema.optionalKey(Schema.toType(AppConfigOverridesSchema.fields.fresh)),
+  fromCache: Schema.optionalKey(Schema.toType(AppConfigOverridesSchema.fields.fromCache)),
 });
 
 export type AppConfigOverrides = Schema.Schema.Type<typeof AppConfigOverridesInputSchema>; /**
@@ -64,6 +70,9 @@ export type AppConfigOverrides = Schema.Schema.Type<typeof AppConfigOverridesInp
  * - Cache disabling switch with a default value of false.
  * - Clone deletion after successful analysis switch with a default value of false.
  * - Parallel clone count with a default value of 4.
+ * - Cache cleaning switch (--clean) with a default value of false.
+ * - Fresh re-run switch (--fresh) with a default value of false.
+ * - Search-from-cache switch (--from-cache) with a default value of false.
  */
 const AppConfigSchema = Schema.Struct({
   githubApiKey: GithubApiKeySchema,
@@ -78,6 +87,9 @@ const AppConfigSchema = Schema.Struct({
       cloneConcurrency: fields.cloneConcurrency.pipe(
         Schema.withDecodingDefaultKey(Effect.succeed("4")),
       ),
+      clean: fields.clean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+      fresh: fields.fresh.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+      fromCache: fields.fromCache.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
     };
   }).fields,
 });
@@ -98,13 +110,33 @@ export const AppConfigLayer = Layer.effect(AppConfig, AppConfigConfig).pipe(
 
 export const makeAppConfigOverlayLayer = (
   overrides: AppConfigOverrides,
-): Layer.Layer<AppConfig, Schema.SchemaError, AppConfig> =>
+): Layer.Layer<AppConfig, Schema.SchemaError | string, AppConfig> =>
   Layer.effect(
     AppConfig,
     Effect.gen(function* () {
       const validated = yield* Schema.decodeEffect(AppConfigOverridesInputSchema)(overrides);
 
       const current = yield* AppConfig;
+
+      // Effective values after the flag/env overlay, where contradictions
+      // must be caught before the cache layer is built: `--clean` would
+      // otherwise wipe a cache the run then reads (`--from-cache`) or that
+      // `--no-cache` says must not be touched.
+      const noCache = validated.noCache ?? current.noCache;
+      const clean = validated.clean ?? current.clean;
+      const fromCache = validated.fromCache ?? current.fromCache;
+
+      if (noCache && fromCache) {
+        return yield* Effect.fail("--no-cache and --from-cache cannot be combined");
+      }
+      if (noCache && clean) {
+        return yield* Effect.fail("--no-cache and --clean cannot be combined");
+      }
+      if (clean && fromCache) {
+        return yield* Effect.fail(
+          "--clean and --from-cache cannot be combined: --clean wipes the cache that --from-cache reads",
+        );
+      }
 
       return {
         ...current,
@@ -132,6 +164,21 @@ export const makeAppConfigOverlayLayer = (
           ? {}
           : {
               cloneConcurrency: validated.cloneConcurrency,
+            }),
+        ...(validated.clean === undefined
+          ? {}
+          : {
+              clean: validated.clean,
+            }),
+        ...(validated.fresh === undefined
+          ? {}
+          : {
+              fresh: validated.fresh,
+            }),
+        ...(validated.fromCache === undefined
+          ? {}
+          : {
+              fromCache: validated.fromCache,
             }),
       };
     }),
