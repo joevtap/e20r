@@ -13,11 +13,14 @@ import { packageManagerProbe } from "./probes/package-manager.ts";
  * Every probe is recursive: it inspects all matching files below the clone
  * root, never just the top level. Probes never fail; absence of evidence is
  * simply an empty signal list.
+ *
+ * `S` is the signal schema the probe returns, so each probe's signature
+ * documents exactly which signals it can emit.
  */
-export type Probe = (
+export type Probe<S extends Signal = Signal> = (
   cloneDir: string,
   repo: GithubRepo,
-) => Effect.Effect<ReadonlyArray<Signal>, never, FileSystem.FileSystem | Path.Path>;
+) => Effect.Effect<ReadonlyArray<S>, never, FileSystem.FileSystem | Path.Path>;
 
 const probes: ReadonlyArray<Probe> = [
   effectPackageJsonProbe,

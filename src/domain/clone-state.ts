@@ -51,6 +51,9 @@ export const SignalSchema = Schema.Union([
 
 export type Signal = Schema.Schema.Type<typeof SignalSchema>;
 
+/** The signal variant(s) with the given `_tag`(s). */
+export type SignalOf<Tag extends Signal["_tag"]> = Extract<Signal, { _tag: Tag }>;
+
 /**
  * The state of cloning one repository and selecting it as an Effect adopter:
  * the clone outcome, the commit hash actually cloned, the selection signals

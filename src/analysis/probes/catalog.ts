@@ -1,9 +1,10 @@
 import { Effect, Option } from "effect";
-import * as FileSystem from "effect/FileSystem";
-import type * as Path from "effect/Path";
-import type { EffectVersion, Signal } from "../../domain/clone-state.ts";
+import type { EffectVersion, SignalOf } from "../../domain/clone-state.ts";
 import { parsePnpmCatalogs } from "../catalog.ts";
 import { findManifests, type ManifestEntry } from "../package-json.ts";
+import type { Probe } from "../probe.ts";
+
+type CatalogSignal = SignalOf<"effect-version-in-catalog">;
 
 interface CatalogRef {
   readonly file: string;
@@ -36,7 +37,7 @@ const catalogRefs = (manifests: ReadonlyArray<ManifestEntry>): ReadonlyArray<Cat
 const versionSignal = (
   manager: "pnpm" | "bun",
   versions: ReadonlySet<EffectVersion>,
-): ReadonlyArray<Signal> =>
+): ReadonlyArray<CatalogSignal> =>
   versions.size === 0
     ? []
     : [
@@ -44,7 +45,7 @@ const versionSignal = (
           _tag: "effect-version-in-catalog",
           manager,
           versions: Array.from(versions),
-        } satisfies Signal,
+        } satisfies CatalogSignal,
       ];
 
 /**
@@ -53,9 +54,7 @@ const versionSignal = (
  * references `effect: "catalog:"` / `"catalog:<name>"` and the catalog
  * defines an `effect` version.
  */
-export const pnpmCatalogProbe = (
-  cloneDir: string,
-): Effect.Effect<ReadonlyArray<Signal>, never, FileSystem.FileSystem | Path.Path> =>
+export const pnpmCatalogProbe: Probe<CatalogSignal> = (cloneDir) =>
   Effect.gen(function* () {
     const manifests = yield* findManifests(cloneDir);
     const refs = catalogRefs(manifests);
@@ -81,9 +80,7 @@ export const pnpmCatalogProbe = (
  * Same resolution for bun catalogs, which live in the root `package.json`
  * under `workspaces.catalog` / `workspaces.catalogs`.
  */
-export const bunCatalogProbe = (
-  cloneDir: string,
-): Effect.Effect<ReadonlyArray<Signal>, never, FileSystem.FileSystem | Path.Path> =>
+export const bunCatalogProbe: Probe<CatalogSignal> = (cloneDir) =>
   Effect.gen(function* () {
     const manifests = yield* findManifests(cloneDir);
     const refs = catalogRefs(manifests);

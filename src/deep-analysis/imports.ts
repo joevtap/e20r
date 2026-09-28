@@ -12,24 +12,13 @@ import type { EffectImport } from "../domain/analysis-state.ts";
  * can emit corrected rows for the edge cases this scan misses.
  */
 
+/** One binding of an import clause, e.g. `Effect as E` -> imported "Effect", local "E". */
+export type ImportName = EffectImport["names"][number];
+
 export type ImportKind = EffectImport["kind"];
 
-export interface ImportName {
-  /** Name in the source module: "Effect", "*", or "default". */
-  readonly imported: string;
-  /** Binding in the file: `Effect as E` gives local "E". */
-  readonly local: string;
-  readonly typeOnly: boolean;
-}
-
-export interface EffectImportRow {
-  readonly module: string;
-  readonly packageName: string;
-  readonly kind: ImportKind;
-  /** 1-based line of the statement. */
-  readonly line: number;
-  readonly names: ReadonlyArray<ImportName>;
-}
+/** One Effect import of one file, exactly as the signal stores it. */
+export type EffectImportRow = EffectImport;
 
 /**
  * Module specifiers that belong to the Effect library: the `effect` package
@@ -137,7 +126,7 @@ const row = (
   if (specifier === undefined || !isEffectModule(specifier)) return undefined;
   return {
     module: specifier,
-    packageName: effectPackageName(specifier),
+    package: effectPackageName(specifier),
     kind,
     line: lineOf(source, index),
     names,

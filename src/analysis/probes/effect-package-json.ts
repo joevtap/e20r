@@ -1,17 +1,14 @@
 import { Effect, HashSet } from "effect";
-import * as FileSystem from "effect/FileSystem";
-import type * as Path from "effect/Path";
-import type { EffectVersion, Signal } from "../../domain/clone-state.ts";
+import type { EffectVersion, SignalOf } from "../../domain/clone-state.ts";
 import { effectRefs, findManifests } from "../package-json.ts";
+import type { Probe } from "../probe.ts";
 
 /**
  * Recursively inspects every `package.json` in the clone for an `effect`
  * dependency. Emits one signal carrying the deduped version specifiers and
  * the exact occurrences (file + dependency field).
  */
-export const effectPackageJsonProbe = (
-  cloneDir: string,
-): Effect.Effect<ReadonlyArray<Signal>, never, FileSystem.FileSystem | Path.Path> =>
+export const effectPackageJsonProbe: Probe<SignalOf<"effect-in-package-json">> = (cloneDir) =>
   Effect.gen(function* () {
     const manifests = yield* findManifests(cloneDir);
 
@@ -31,6 +28,6 @@ export const effectPackageJsonProbe = (
         _tag: "effect-in-package-json",
         versions: [...versions],
         occurrences,
-      } satisfies Signal,
+      } satisfies SignalOf<"effect-in-package-json">,
     ];
   });

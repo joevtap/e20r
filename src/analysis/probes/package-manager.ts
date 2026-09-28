@@ -1,26 +1,21 @@
 import { Array, Effect, Option } from "effect";
 import * as FileSystem from "effect/FileSystem";
-import type * as Path from "effect/Path";
-import type { Signal } from "../../domain/clone-state.ts";
+import type { SignalOf } from "../../domain/clone-state.ts";
+import type { Probe } from "../probe.ts";
+
+type PackageManagerSignal = SignalOf<"uses-pnpm" | "uses-bun" | "uses-npm">;
 
 interface LockfileEvidence {
   readonly file: string;
   readonly exists: boolean;
 }
 
-const lockfileSignals = (
-  tag: "uses-pnpm" | "uses-bun" | "uses-npm",
-  evidence: ReadonlyArray<LockfileEvidence>,
-): ReadonlyArray<Signal> => {
-  const found = Array.filter(evidence, (entry) => entry.exists);
-  if (found.length === 0) return [];
-  return [
-    {
-      _tag: tag,
-      evidence: Array.map(found, (entry) => entry.file).join(", "),
-    } satisfies Signal,
-  ];
-};
+/** The found file names joined for the signal's evidence, "" when none. */
+const evidenceText = (evidence: ReadonlyArray<LockfileEvidence>): string =>
+  Array.map(
+    Array.filter(evidence, (entry) => entry.exists),
+    (entry) => entry.file,
+  ).join(", ");
 
 /**
  * Detects the package managers backing the repository through their
@@ -28,15 +23,11 @@ const lockfileSignals = (
  * carry evidence for more than one manager, so this probe can emit up to
  * three signals.
  */
-export const packageManagerProbe = (
-  cloneDir: string,
-): Effect.Effect<ReadonlyArray<Signal>, never, FileSystem.FileSystem | Path.Path> =>
+export const packageManagerProbe: Probe<PackageManagerSignal> = (cloneDir) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
 
-    const exists = (
-      file: string,
-    ): Effect.Effect<LockfileEvidence, never, FileSystem.FileSystem | Path.Path> =>
+    const exists = (file: string) =>
       Effect.map(Effect.option(fs.exists(`${cloneDir}/${file}`)), (result) => ({
         file,
         exists: Option.getOrElse(result, () => false),
@@ -53,9 +44,15 @@ export const packageManagerProbe = (
       { concurrency: "unbounded" },
     );
 
+    const pnpm = evidenceText([pnpmWorkspace, pnpmLock]);
+    const bun = evidenceText([bunBinaryLock, bunTextLock]);
+    const npm = evidenceText([npmLock]);
+
     return [
-      ...lockfileSignals("uses-pnpm", [pnpmWorkspace, pnpmLock]),
-      ...lockfileSignals("uses-bun", [bunBinaryLock, bunTextLock]),
-      ...lockfileSignals("uses-npm", [npmLock]),
+      ...(pnpm === ""
+        ? []
+        : [{ _tag: "uses-pnpm", evidence: pnpm } satisfies SignalOf<"uses-pnpm">]),
+      ...(bun === "" ? [] : [{ _tag: "uses-bun", evidence: bun } satisfies SignalOf<"uses-bun">]),
+      ...(npm === "" ? [] : [{ _tag: "uses-npm", evidence: npm } satisfies SignalOf<"uses-npm">]),
     ];
   });
