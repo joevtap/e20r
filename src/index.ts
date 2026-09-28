@@ -17,7 +17,10 @@ import { AppConfig, AppConfigLayer, makeAppConfigOverlayLayer } from "./config.t
 import { CacheDir, CacheDirLayer } from "./cache.ts";
 import { ensureCloned } from "./github/clone.ts";
 import { analyzeRepo } from "./analysis/probe.ts";
+import { runDeepAnalysis } from "./deep-analysis/stage.ts";
 import { isEffectAdopter, type RepoCloneState } from "./domain/clone-state.ts";
+import { hasEffectCodeUsage } from "./domain/analysis-state.ts";
+import { makeRunSummary } from "./domain/run-summary.ts";
 import type { EffectRepoState } from "./domain/effect-repo.ts";
 import {
   FetchHttpClient,
@@ -74,6 +77,16 @@ const e20r = Command.make(
     ),
     fromCache: Flag.boolean("from-cache").pipe(
       Flag.withDescription("Skip the GitHub search and select the top repositories from the cache"),
+      Flag.optional,
+    ),
+    analysisOnly: Flag.boolean("analysis-only").pipe(
+      Flag.withDescription(
+        "Skip the crawl and selection; deep-analyze the cached Effect adopters only",
+      ),
+      Flag.optional,
+    ),
+    skipAnalysis: Flag.boolean("skip-analysis").pipe(
+      Flag.withDescription("Skip the deep-analysis stage of the selected Effect adopters"),
       Flag.optional,
     ),
   },
@@ -293,35 +306,42 @@ const e20r = Command.make(
       // --from-cache skips the GitHub search entirely and selects the top
       // repositories from the crawl cache; the search stream below is only
       // pulled when a fresh crawl is wanted.
-      const collectedRepos = config.fromCache
-        ? yield* Effect.map(cache.reposById, (cached) => [...cached.values()])
-        : yield* uniqueRepos.pipe(
-            Stream.throttle({ cost: () => 1, units: 1, duration: "3 seconds" }),
-            Stream.takeWhile((repo) => {
-              collected++;
-              if (collected === config.repoSearchBudget) cutOffStars = repo.stargazersCount;
-              return collected <= config.repoSearchBudget || repo.stargazersCount >= cutOffStars;
-            }),
-            Stream.runCollect,
-          );
+      // --analysis-only skips the crawl and selection entirely: the
+      // deep-analysis stage below then works off the cached adopter
+      // selections, so nothing has to be collected here.
+      const collectedRepos = config.analysisOnly
+        ? []
+        : config.fromCache
+          ? yield* Effect.map(cache.reposById, (cached) => [...cached.values()])
+          : yield* uniqueRepos.pipe(
+              Stream.throttle({ cost: () => 1, units: 1, duration: "3 seconds" }),
+              Stream.takeWhile((repo) => {
+                collected++;
+                if (collected === config.repoSearchBudget) cutOffStars = repo.stargazersCount;
+                return collected <= config.repoSearchBudget || repo.stargazersCount >= cutOffStars;
+              }),
+              Stream.runCollect,
+            );
 
       // Sort the whole collected set by the total order, then keep the top N.
       const topRepos = Array.take(Array.sort(repoOrder)(collectedRepos), config.repoSearchBudget);
 
-      yield* Effect.log(
-        config.fromCache
-          ? `Selected ${topRepos.length} of ${collectedRepos.length} cached repositories; keeping top ${config.repoSearchBudget}.`
-          : `Crawled ${stats.pages} pages: ${collectedRepos.length} unique repositories ` +
-              `(${stats.items - collectedRepos.length} boundary re-listings skipped), cut-off at ★${cutOffStars}; ` +
-              `keeping top ${config.repoSearchBudget}.`,
-      );
-
-      if (!config.fromCache) {
+      if (!config.analysisOnly) {
         yield* Effect.log(
-          cache.enabled
-            ? `Crawl cached ${stats.cached} new repositories in ${cache.root}`
-            : "Cache disabled; results kept in memory only",
+          config.fromCache
+            ? `Selected ${topRepos.length} of ${collectedRepos.length} cached repositories; keeping top ${config.repoSearchBudget}.`
+            : `Crawled ${stats.pages} pages: ${collectedRepos.length} unique repositories ` +
+                `(${stats.items - collectedRepos.length} boundary re-listings skipped), cut-off at ★${cutOffStars}; ` +
+                `keeping top ${config.repoSearchBudget}.`,
         );
+
+        if (!config.fromCache) {
+          yield* Effect.log(
+            cache.enabled
+              ? `Crawl cached ${stats.cached} new repositories in ${cache.root}`
+              : "Cache disabled; results kept in memory only",
+          );
+        }
       }
 
       const cloneStatesById = yield* cache.cloneStateById;
@@ -340,8 +360,8 @@ const e20r = Command.make(
       let reusedClones = 0;
       let cloneFailures = 0;
 
-      // Selections of Effect adopters for the deep-analysis stage (its probes
-      // and signals are not defined yet), appended to their own state file.
+      // Selections of Effect adopters for the deep-analysis stage, appended
+      // to their own state file.
 
       // A previous run may have recorded the adopter state but failed to
       // append the selection hand-off (disk full, crash): selections of
@@ -457,8 +477,11 @@ const e20r = Command.make(
           }
 
           // Clones are deleted only once their state is durably recorded;
-          // otherwise the next run would have to re-clone anyway.
-          if (wasRecorded && config.ephemeral) {
+          // otherwise the next run would have to re-clone anyway. Adopter
+          // clones stay alive for the deep-analysis stage below, which
+          // deletes them once their analysis is recorded (or when analysis
+          // is skipped, nothing else needs them).
+          if (wasRecorded && config.ephemeral && (!cloneState.adopter || config.skipAnalysis)) {
             yield* Effect.ignore(fs.remove(cloneDir, { recursive: true, force: true }));
           }
 
@@ -478,12 +501,91 @@ const e20r = Command.make(
         }
       }
 
+      if (!config.analysisOnly) {
+        yield* Effect.log(
+          `Recorded ${recordedStates.length} repositories ` +
+            `(${previouslyRecorded} already recorded, ${freshClones} fresh clones, ${reusedClones} reused, ` +
+            `${cloneFailures} clone failures); ` +
+            `${recordedStates.filter((clone) => clone.adopter).length} Effect adopters` +
+            `${effectReposLost > 0 ? `, ${effectReposLost} adopter selections not recorded` : ""}.`,
+        );
+      }
+
+      // ---- deep-analysis stage ----
+
+      // Every selected adopter: from this run's selection and from previous
+      // runs (deduped by repository id).
+      const adopters = new Map<number, EffectRepoState>();
+      for (const selection of recoveredSelections) adopters.set(selection.repoId, selection);
+      for (const selection of effectRepos) adopters.set(selection.repoId, selection);
+
+      if (config.skipAnalysis) {
+        yield* Effect.log("Deep-analysis stage skipped (--skip-analysis)");
+      } else {
+        const analyzed = yield* runDeepAnalysis([...adopters.values()], {
+          fresh: config.fresh,
+          ephemeral: config.ephemeral,
+          concurrency: config.cloneConcurrency,
+        });
+        yield* Effect.log(
+          `Deep analysis: ${analyzed.analyzed} adopters analyzed (${analyzed.codeUsage} with effect in code), ` +
+            `${analyzed.alreadyRecorded} already recorded, ${analyzed.failures} failures` +
+            `${analyzed.missingRepos > 0 ? `, ${analyzed.missingRepos} not in the crawl cache` : ""}.`,
+        );
+      }
+
+      // ---- population summary ----
+
+      // "Out of N repos analysed, M used effect": computed from the recorded
+      // state (last record winning), so it describes the population as a
+      // whole and not just the work done by this run.
+      const analysisStates = yield* cache.analysisStateById;
+      let analyzedRepos = 0;
+      let failedClones = 0;
+      let adopterCount = 0;
+      for (const state of cloneStatesById.values()) {
+        if (state.cloneStatus === "cloned") {
+          analyzedRepos++;
+        } else {
+          failedClones++;
+        }
+        if (state.adopter) adopterCount++;
+      }
+      let analyzedAdopters = 0;
+      let adoptersWithCodeUsage = 0;
+      for (const state of analysisStates.values()) {
+        if (state.analysisStatus !== "analyzed") continue;
+        analyzedAdopters++;
+        if (hasEffectCodeUsage(state.signals)) adoptersWithCodeUsage++;
+      }
+
+      const summary = makeRunSummary(
+        {
+          analyzedRepos,
+          cloneFailures: failedClones,
+          adopters: adopterCount,
+          analyzedAdopters,
+          adoptersWithCodeUsage,
+        },
+        {
+          repoSearchBudget: config.repoSearchBudget,
+          fromCache: config.fromCache,
+          fresh: config.fresh,
+          ephemeral: config.ephemeral,
+        },
+        yield* DateTime.now,
+      );
+
+      const writtenSummary = yield* cache.appendRunSummaries([summary]).pipe(Effect.option);
+      if (Option.isNone(writtenSummary)) {
+        yield* Effect.logWarning("Failed to record the run summary after retries");
+      }
+
       yield* Effect.log(
-        `Recorded ${recordedStates.length} repositories ` +
-          `(${previouslyRecorded} already recorded, ${freshClones} fresh clones, ${reusedClones} reused, ` +
-          `${cloneFailures} clone failures); ` +
-          `${recordedStates.filter((clone) => clone.adopter).length} Effect adopters` +
-          `${effectReposLost > 0 ? `, ${effectReposLost} adopter selections not recorded` : ""}.`,
+        `Population: ${analyzedRepos} repos analysed (${failedClones} clone failures), ` +
+          `${adopterCount} adopters (${(summary.population.adopterRatio * 100).toFixed(1)}%); ` +
+          `${analyzedAdopters} analyzed for usage, ${adoptersWithCodeUsage} with effect in code ` +
+          `(${(summary.deepAnalysis.codeUsageRatio * 100).toFixed(1)}%).`,
       );
     }),
 ).pipe(
@@ -497,6 +599,8 @@ const e20r = Command.make(
       clean,
       fresh,
       fromCache,
+      analysisOnly,
+      skipAnalysis,
     }) =>
       // Services derived from AppConfig (CacheDir) must be built from the
       // flag-overlaid config, so the AppConfig chain lives inside this provide
@@ -536,6 +640,14 @@ const e20r = Command.make(
             ...Option.match(fromCache, {
               onNone: () => {},
               onSome: (value) => ({ fromCache: value }),
+            }),
+            ...Option.match(analysisOnly, {
+              onNone: () => {},
+              onSome: (value) => ({ analysisOnly: value }),
+            }),
+            ...Option.match(skipAnalysis, {
+              onNone: () => {},
+              onSome: (value) => ({ skipAnalysis: value }),
             }),
           }).pipe(Layer.provide(AppConfigLayer)),
         ),

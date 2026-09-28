@@ -40,6 +40,8 @@ const AppConfigOverridesSchema = Schema.Struct({
   clean: Schema.Boolean,
   fresh: Schema.Boolean,
   fromCache: Schema.Boolean,
+  analysisOnly: Schema.Boolean,
+  skipAnalysis: Schema.Boolean,
 });
 
 const AppConfigOverridesInputSchema = Schema.Struct({
@@ -55,6 +57,8 @@ const AppConfigOverridesInputSchema = Schema.Struct({
   clean: Schema.optionalKey(Schema.toType(AppConfigOverridesSchema.fields.clean)),
   fresh: Schema.optionalKey(Schema.toType(AppConfigOverridesSchema.fields.fresh)),
   fromCache: Schema.optionalKey(Schema.toType(AppConfigOverridesSchema.fields.fromCache)),
+  analysisOnly: Schema.optionalKey(Schema.toType(AppConfigOverridesSchema.fields.analysisOnly)),
+  skipAnalysis: Schema.optionalKey(Schema.toType(AppConfigOverridesSchema.fields.skipAnalysis)),
 });
 
 export type AppConfigOverrides = Schema.Schema.Type<typeof AppConfigOverridesInputSchema>; /**
@@ -73,6 +77,8 @@ export type AppConfigOverrides = Schema.Schema.Type<typeof AppConfigOverridesInp
  * - Cache cleaning switch (--clean) with a default value of false.
  * - Fresh re-run switch (--fresh) with a default value of false.
  * - Search-from-cache switch (--from-cache) with a default value of false.
+ * - Deep-analysis-only switch (--analysis-only) with a default value of false.
+ * - Deep-analysis skip switch (--skip-analysis) with a default value of false.
  */
 const AppConfigSchema = Schema.Struct({
   githubApiKey: GithubApiKeySchema,
@@ -90,6 +96,8 @@ const AppConfigSchema = Schema.Struct({
       clean: fields.clean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
       fresh: fields.fresh.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
       fromCache: fields.fromCache.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+      analysisOnly: fields.analysisOnly.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+      skipAnalysis: fields.skipAnalysis.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
     };
   }).fields,
 });
@@ -125,6 +133,8 @@ export const makeAppConfigOverlayLayer = (
       const noCache = validated.noCache ?? current.noCache;
       const clean = validated.clean ?? current.clean;
       const fromCache = validated.fromCache ?? current.fromCache;
+      const analysisOnly = validated.analysisOnly ?? current.analysisOnly;
+      const skipAnalysis = validated.skipAnalysis ?? current.skipAnalysis;
 
       if (noCache && fromCache) {
         return yield* Effect.fail("--no-cache and --from-cache cannot be combined");
@@ -135,6 +145,14 @@ export const makeAppConfigOverlayLayer = (
       if (clean && fromCache) {
         return yield* Effect.fail(
           "--clean and --from-cache cannot be combined: --clean wipes the cache that --from-cache reads",
+        );
+      }
+      if (analysisOnly && skipAnalysis) {
+        return yield* Effect.fail("--analysis-only and --skip-analysis cannot be combined");
+      }
+      if (analysisOnly && noCache) {
+        return yield* Effect.fail(
+          "--analysis-only and --no-cache cannot be combined: --analysis-only selects repositories from the cached adopter state",
         );
       }
 
@@ -179,6 +197,16 @@ export const makeAppConfigOverlayLayer = (
           ? {}
           : {
               fromCache: validated.fromCache,
+            }),
+        ...(validated.analysisOnly === undefined
+          ? {}
+          : {
+              analysisOnly: validated.analysisOnly,
+            }),
+        ...(validated.skipAnalysis === undefined
+          ? {}
+          : {
+              skipAnalysis: validated.skipAnalysis,
             }),
       };
     }),

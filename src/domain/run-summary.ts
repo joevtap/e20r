@@ -42,3 +42,50 @@ export const RunSummarySchema = Schema.Struct({
 });
 
 export type RunSummary = Schema.Schema.Type<typeof RunSummarySchema>;
+
+export interface RunSummaryCounts {
+  readonly analyzedRepos: number;
+  readonly cloneFailures: number;
+  readonly adopters: number;
+  readonly analyzedAdopters: number;
+  readonly adoptersWithCodeUsage: number;
+}
+
+export interface RunSummaryContext {
+  readonly repoSearchBudget: number;
+  readonly fromCache: boolean;
+  readonly fresh: boolean;
+  readonly ephemeral: boolean;
+}
+
+const ratio = (numerator: number, denominator: number): number =>
+  denominator === 0 ? 0 : numerator / denominator;
+
+/**
+ * Builds the population summary of one run from the counts of the recorded
+ * state. Ratios are derived here so they can never disagree with the counts.
+ */
+export const makeRunSummary = (
+  counts: RunSummaryCounts,
+  context: RunSummaryContext,
+  recordedAt: RunSummary["recordedAt"],
+): RunSummary => ({
+  recordedAt,
+  population: {
+    analyzedRepos: counts.analyzedRepos,
+    cloneFailures: counts.cloneFailures,
+    adopters: counts.adopters,
+    adopterRatio: ratio(counts.adopters, counts.analyzedRepos),
+  },
+  deepAnalysis: {
+    analyzedAdopters: counts.analyzedAdopters,
+    adoptersWithCodeUsage: counts.adoptersWithCodeUsage,
+    codeUsageRatio: ratio(counts.adoptersWithCodeUsage, counts.analyzedAdopters),
+  },
+  context: {
+    repoSearchBudget: context.repoSearchBudget,
+    fromCache: context.fromCache,
+    fresh: context.fresh,
+    ephemeral: context.ephemeral,
+  },
+});

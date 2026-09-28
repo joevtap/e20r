@@ -129,7 +129,13 @@ export type AnalysisStatus = Schema.Schema.Type<typeof AnalysisStatusSchema>;
 export const AnalysisStateSchema = Schema.Struct({
   repoId: Schema.Finite,
   fullName: Schema.String,
-  commit: Schema.String,
+
+  /**
+   * Commit hash of the analyzed snapshot (the clone's HEAD). Absent while the
+   * analysis failed before a snapshot was available.
+   */
+  commit: Schema.optionalKey(Schema.String),
+
   analysisStatus: AnalysisStatusSchema,
   analysisError: Schema.optionalKey(Schema.String),
   signals: Schema.Array(AnalysisSignalSchema),

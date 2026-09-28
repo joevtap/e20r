@@ -109,13 +109,13 @@ export interface CacheDirValue {
    * Cloning and selection state per repository id, last record winning so
    * clone-failed records are replaced by retried runs.
    */
-  readonly cloneStateById: Effect.Effect<ReadonlyMap<number, RepoCloneState>, PlatformError>;
+  readonly cloneStateById: Effect.Effect<ReadonlyMap<number, RepoCloneState>>;
 
   /**
    * Crawled repositories per repository id (last record winning), so resumed
    * runs can reconstruct records that only reference a repo id.
    */
-  readonly reposById: Effect.Effect<ReadonlyMap<number, GithubRepo>, PlatformError>;
+  readonly reposById: Effect.Effect<ReadonlyMap<number, GithubRepo>>;
 
   /**
    * Appends clone-state records to the cache file as soon as they are
@@ -140,7 +140,7 @@ export interface CacheDirValue {
    * Deep-analysis state per repository id (last record winning), so resumed
    * runs know which adopters were already analyzed at which commit.
    */
-  readonly analysisStateById: Effect.Effect<ReadonlyMap<number, AnalysisState>, PlatformError>;
+  readonly analysisStateById: Effect.Effect<ReadonlyMap<number, AnalysisState>>;
 
   /**
    * Appends deep-analysis records to the cache file as soon as they are
