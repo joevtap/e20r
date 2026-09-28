@@ -13,6 +13,7 @@ import {
   type AnalysisSignal,
   type EffectImportsPerFileSignal,
   type EffectPackagesUsedSignal,
+  type EffectSymbolsPerFileSignal,
   type FilesUsingEffectCountSignal,
   type TsFileCountSignal,
 } from "../src/domain/analysis-state.ts";
@@ -79,6 +80,41 @@ const program = Effect.gen(function* () {
   check(
     "per-file package rows are non-empty",
     (packages?.files ?? []).every((file) => file.packages.length > 0),
+  );
+
+  // effect-symbols-per-file is emitted per file: gather them all.
+  const symbolRows = signals.filter(
+    (signal): signal is EffectSymbolsPerFileSignal => signal._tag === "effect-symbols-per-file",
+  );
+  check("effect-symbols-per-file gathered", symbolRows.length >= 5, symbolRows.length);
+  check(
+    "symbol totals match their rows",
+    symbolRows.every(
+      (row) => row.total === row.symbols.reduce((sum, usage) => sum + usage.count, 0),
+    ),
+  );
+  check(
+    "symbol rows sorted by count",
+    symbolRows.every((row) =>
+      row.symbols.every(
+        (usage, index) => index === 0 || row.symbols[index - 1]!.count >= usage.count,
+      ),
+    ),
+  );
+  const allUsages = symbolRows.flatMap((row) => row.symbols);
+  check(
+    "Effect.gen calls counted",
+    allUsages.some((usage) => usage.symbol === "Effect.gen" && usage.kind === "call"),
+    allUsages.slice(0, 10),
+  );
+  check(
+    "type references counted",
+    allUsages.some((usage) => usage.kind === "type-reference"),
+    allUsages.slice(0, 10),
+  );
+  check(
+    "symbols only in files with imports",
+    symbolRows.every((row) => row.symbols.length > 0),
   );
 
   if (failures > 0) {

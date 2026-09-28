@@ -100,6 +100,31 @@ export const EffectPackagesUsedSchema = Schema.TaggedStruct("effect-packages-use
 export type EffectPackagesUsedSignal = Schema.Schema.Type<typeof EffectPackagesUsedSchema>;
 
 /**
+ * What Effect symbols a file actually uses, counted from the TypeScript AST
+ * (see `src/deep-analysis/symbols.ts`): import aliases are normalized through
+ * the file's imports (`Effect as E` counts as `Effect.gen`), and call sites,
+ * property accesses, bare identifiers and type positions are counted apart.
+ * The per-symbol grain is what makes "which APIs do adopters use"
+ * aggregations possible.
+ */
+export const EffectSymbolsPerFileSchema = Schema.TaggedStruct("effect-symbols-per-file", {
+  file: Schema.String,
+  role: FileRoleSchema,
+  /** Total usages: the sum of the counts below. */
+  total: Schema.Finite,
+  symbols: Schema.Array(
+    Schema.Struct({
+      /** Normalized name: "Effect.gen", "Schema.Struct", "pipe", "Effect.Effect". */
+      symbol: Schema.String,
+      kind: Schema.Literals(["call", "property-access", "identifier", "type-reference"]),
+      count: Schema.Finite,
+    }),
+  ),
+});
+
+export type EffectSymbolsPerFileSignal = Schema.Schema.Type<typeof EffectSymbolsPerFileSchema>;
+
+/**
  * A detected evidence of how the cloned repository uses Effect, gathered by
  * the deep-analysis probes. Separate from the selection signals of
  * `clone-state.ts`: those answer "is this an adopter?", these answer "how is
@@ -111,6 +136,7 @@ export const AnalysisSignalSchema = Schema.Union([
   FilesUsingEffectCountSchema,
   EffectImportsPerFileSchema,
   EffectPackagesUsedSchema,
+  EffectSymbolsPerFileSchema,
 ]);
 
 export type AnalysisSignal = Schema.Schema.Type<typeof AnalysisSignalSchema>;

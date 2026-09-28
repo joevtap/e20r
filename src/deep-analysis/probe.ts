@@ -5,6 +5,7 @@ import type { GithubRepo } from "../domain/github.ts";
 import type { AnalysisSignal } from "../domain/analysis-state.ts";
 import { tsFilesProbe } from "./probes/ts-files.ts";
 import { effectImportsProbe } from "./probes/effect-imports.ts";
+import { effectSymbolsProbe } from "./probes/effect-symbols.ts";
 
 /**
  * Deep-analysis probes gather effect-usage signals from a cloned repository
@@ -20,7 +21,7 @@ export type AnalysisProbe<S extends AnalysisSignal = AnalysisSignal> = (
   repo: GithubRepo,
 ) => Effect.Effect<ReadonlyArray<S>, never, FileSystem.FileSystem | Path.Path>;
 
-const probes: ReadonlyArray<AnalysisProbe> = [tsFilesProbe, effectImportsProbe];
+const probes: ReadonlyArray<AnalysisProbe> = [tsFilesProbe, effectImportsProbe, effectSymbolsProbe];
 
 /**
  * Runs every deep-analysis probe against a clone and concatenates the
