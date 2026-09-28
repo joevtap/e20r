@@ -4,6 +4,8 @@ import { AppConfig } from "./config.ts";
 import { GithubRepoSchema, type GithubRepo } from "./domain/github.ts";
 import { RepoCloneStateSchema, type RepoCloneState } from "./domain/clone-state.ts";
 import { EffectRepoStateSchema, type EffectRepoState } from "./domain/effect-repo.ts";
+import { AnalysisStateSchema, type AnalysisState } from "./domain/analysis-state.ts";
+import { RunSummarySchema, type RunSummary } from "./domain/run-summary.ts";
 
 // The cache files store the encoded (GitHub wire / state schema) form of each
 // record so they can be decoded back losslessly.
@@ -15,6 +17,11 @@ const decodeCloneState = Schema.decodeUnknownOption(RepoCloneStateSchema);
 
 const encodeEffectRepo = Schema.encodeSync(EffectRepoStateSchema);
 const decodeEffectRepo = Schema.decodeUnknownOption(EffectRepoStateSchema);
+
+const encodeAnalysisState = Schema.encodeSync(AnalysisStateSchema);
+const decodeAnalysisState = Schema.decodeUnknownOption(AnalysisStateSchema);
+
+const encodeRunSummary = Schema.encodeSync(RunSummarySchema);
 
 const parseLine =
   <A>(decode: (value: unknown) => Option.Option<A>) =>
@@ -29,6 +36,7 @@ const parseLine =
 const parseRepoLine = parseLine(decodeRepo);
 const parseCloneStateLine = parseLine(decodeCloneState);
 const parseEffectRepoLine = parseLine(decodeEffectRepo);
+const parseAnalysisStateLine = parseLine(decodeAnalysisState);
 
 /**
  * Reads every record of a JSONL cache file. Unparseable lines are skipped.
@@ -68,7 +76,11 @@ const writeWithRetry = <A>(
  * - `repos.jsonl`: every repository seen by the GitHub crawl.
  * - `clone-state.jsonl`: clone outcome and Effect-adoption selection per repo.
  * - `effect-repos.jsonl`: repos positively selected as Effect adopters, the
- *   hand-off to the (not yet defined) deep analysis stage.
+ *   hand-off to the deep analysis stage.
+ * - `analysis-state.jsonl`: Effect-usage analysis per adopter, the output of
+ *   the deep analysis stage.
+ * - `run-summary.jsonl`: one population summary per run (analyzed repos,
+ *   adopters, ratios), appended so the ratio survives per run.
  *
  * Writes are appended incrementally as records are produced, so a crash keeps
  * completed progress on disk and the next run resumes where it stopped.
@@ -123,6 +135,31 @@ export interface CacheDirValue {
   readonly appendEffectRepos: (
     effectRepos: ReadonlyArray<EffectRepoState>,
   ) => Effect.Effect<number, PlatformError>;
+
+  /**
+   * Deep-analysis state per repository id (last record winning), so resumed
+   * runs know which adopters were already analyzed at which commit.
+   */
+  readonly analysisStateById: Effect.Effect<ReadonlyMap<number, AnalysisState>, PlatformError>;
+
+  /**
+   * Appends deep-analysis records to the cache file as soon as they are
+   * produced, without dedupe: failed analyses are retried on later runs and
+   * their new record supersedes the previous one (last record wins when
+   * loading). Returns the number of written entries.
+   */
+  readonly appendAnalysisStates: (
+    states: ReadonlyArray<AnalysisState>,
+  ) => Effect.Effect<number, PlatformError>;
+
+  /**
+   * Appends one population summary per run, unconditionally: summaries are
+   * facts about their moment in time and are never superseded. Returns the
+   * number of written entries.
+   */
+  readonly appendRunSummaries: (
+    summaries: ReadonlyArray<RunSummary>,
+  ) => Effect.Effect<number, PlatformError>;
 }
 
 export class CacheDir extends Context.Service<CacheDir, CacheDirValue>()("e20r/CacheDir") {}
@@ -152,6 +189,9 @@ export const CacheDirLayer = Layer.effect(
           reposById: Effect.succeed(new Map<number, GithubRepo>()),
           appendCloneStates: () => Effect.succeed(0),
           appendEffectRepos: () => Effect.succeed(0),
+          analysisStateById: Effect.succeed(new Map<number, AnalysisState>()),
+          appendAnalysisStates: () => Effect.succeed(0),
+          appendRunSummaries: () => Effect.succeed(0),
         } satisfies CacheDirValue;
       });
     }
@@ -164,12 +204,20 @@ export const CacheDirLayer = Layer.effect(
     const reposFile = path.join(root, "repos.jsonl");
     const cloneStateFile = path.join(root, "clone-state.jsonl");
     const effectReposFile = path.join(root, "effect-repos.jsonl");
+    const analysisStateFile = path.join(root, "analysis-state.jsonl");
+    const runSummaryFile = path.join(root, "run-summary.jsonl");
 
     // --clean starts the run from an empty cache: every state file and every
     // clone is removed before anything is loaded, so the run re-derives all
     // state from scratch instead of resuming.
     if (config.clean) {
-      for (const file of [reposFile, cloneStateFile, effectReposFile]) {
+      for (const file of [
+        reposFile,
+        cloneStateFile,
+        effectReposFile,
+        analysisStateFile,
+        runSummaryFile,
+      ]) {
         yield* Effect.ignore(fs.remove(file, { force: true }));
       }
       yield* Effect.ignore(fs.remove(clonesDir, { recursive: true, force: true }));
@@ -208,6 +256,15 @@ export const CacheDirLayer = Layer.effect(
       effectRepoIds.add(effectRepo.repoId);
     }
 
+    const analysisStateById = new Map<number, AnalysisState>();
+    for (const state of yield* loadRecords(
+      (file) => fs.readFileString(file),
+      analysisStateFile,
+      parseAnalysisStateLine,
+    )) {
+      analysisStateById.set(state.repoId, state);
+    }
+
     /**
      * Appends records to a JSONL file, skipping the ids already seen and
      * updating the live id bookkeeping. A single `a+` write per batch keeps
@@ -239,25 +296,49 @@ export const CacheDirLayer = Layer.effect(
         return fresh.length;
       });
 
-    const appendCloneStates = (
-      clones: ReadonlyArray<RepoCloneState>,
+    /**
+     * Appends records to a JSONL file without dedupe, in a single `a+` write
+     * per batch so concurrent appends stay line-atomic.
+     */
+    const appendAllRecords = <A>(
+      file: string,
+      records: ReadonlyArray<A>,
+      encode: (record: A) => unknown,
     ): Effect.Effect<number, PlatformError> =>
       Effect.gen(function* () {
-        if (clones.length === 0) return 0;
+        if (records.length === 0) return 0;
 
-        const payload = clones.map((clone) => JSON.stringify(encodeCloneState(clone))).join("\n");
+        const payload = records.map((record) => JSON.stringify(encode(record))).join("\n");
 
         yield* writeWithRetry(
-          fs.writeFileString(cloneStateFile, `${payload}\n`, {
+          fs.writeFileString(file, `${payload}\n`, {
             flag: "a+",
           }),
         );
 
+        return records.length;
+      });
+
+    const appendCloneStates = (
+      clones: ReadonlyArray<RepoCloneState>,
+    ): Effect.Effect<number, PlatformError> =>
+      Effect.gen(function* () {
+        const written = yield* appendAllRecords(cloneStateFile, clones, encodeCloneState);
         for (const clone of clones) {
           cloneStatesById.set(clone.repoId, clone);
         }
+        return written;
+      });
 
-        return clones.length;
+    const appendAnalysisStates = (
+      states: ReadonlyArray<AnalysisState>,
+    ): Effect.Effect<number, PlatformError> =>
+      Effect.gen(function* () {
+        const written = yield* appendAllRecords(analysisStateFile, states, encodeAnalysisState);
+        for (const state of states) {
+          analysisStateById.set(state.repoId, state);
+        }
+        return written;
       });
 
     return {
@@ -278,6 +359,10 @@ export const CacheDirLayer = Layer.effect(
       cloneStateById: Effect.succeed(cloneStatesById),
       reposById: Effect.succeed(reposById),
       appendCloneStates,
+      appendAnalysisStates,
+      analysisStateById: Effect.succeed(analysisStateById),
+      appendRunSummaries: (summaries) =>
+        appendAllRecords(runSummaryFile, summaries, encodeRunSummary),
     } satisfies CacheDirValue;
   }),
 );
