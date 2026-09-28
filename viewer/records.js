@@ -43,6 +43,28 @@
   const isoDate = (value) =>
     typeof value === "string" ? value.replace("T", " ").replace(/\.\d+Z$/, "Z") : "";
 
+  /** First signal with the given `_tag` of a record, or undefined. */
+  const signalOf = (record, tag) => (record.signals || []).find((signal) => signal._tag === tag);
+  Viz.signalOf = signalOf;
+
+  /** Numeric value out of a signal field chain, "" when absent. */
+  const signalNumber = (record, tag, pick) => {
+    const signal = signalOf(record, tag);
+    const value = signal ? pick(signal) : undefined;
+    return value === undefined || value === null ? "" : String(value);
+  };
+  const signalSort = (record, tag, pick) => {
+    const signal = signalOf(record, tag);
+    const value = signal ? pick(signal) : undefined;
+    return value === undefined || value === null ? -1 : Number(value);
+  };
+
+  /** A 0..1 ratio rendered as "12.3%", "" when absent. */
+  const percent = (value) =>
+    value === undefined || value === null || value === ""
+      ? ""
+      : `${(Number(value) * 100).toFixed(1)}%`;
+
   // ---------------------------------------------------------------------
   // clone-state.jsonl: RepoCloneState (src/domain/clone-state.ts)
   // ---------------------------------------------------------------------
@@ -88,6 +110,134 @@
         label: "recorded",
         get: (r) => isoDate(r.recordedAt),
         sort: (r) => asText(r.recordedAt),
+      },
+    ],
+  });
+
+  // ---------------------------------------------------------------------
+  // analysis-state.jsonl: AnalysisState (src/domain/analysis-state.ts).
+  // Registered before effect-repo: its fields are the most specific.
+  // ---------------------------------------------------------------------
+  Viz.registerRecordType("deep-analysis", {
+    label: "deep analysis",
+    test: (record) => "analysisStatus" in record && "repoId" in record,
+    columns: [
+      { key: "repoId", label: "id", get: (r) => asText(r.repoId), sort: (r) => Number(r.repoId) },
+      {
+        key: "fullName",
+        label: "repository",
+        get: (r) => asText(r.fullName),
+        sort: (r) => asText(r.fullName),
+      },
+      {
+        key: "commit",
+        label: "commit",
+        get: (r) => shortCommit(r.commit),
+        sort: (r) => asText(r.commit),
+      },
+      {
+        key: "analysisStatus",
+        label: "status",
+        get: (r) =>
+          r.analysisStatus === "analyzed" ? "analyzed" : `failed: ${asText(r.analysisError)}`,
+        sort: (r) => asText(r.analysisStatus),
+      },
+      {
+        key: "tsSource",
+        label: "ts src",
+        get: (r) => signalNumber(r, "ts-file-count", (s) => s.byRole && s.byRole.source),
+        sort: (r) => signalSort(r, "ts-file-count", (s) => s.byRole && s.byRole.source),
+      },
+      {
+        key: "tsTest",
+        label: "ts test",
+        get: (r) => signalNumber(r, "ts-file-count", (s) => s.byRole && s.byRole.test),
+        sort: (r) => signalSort(r, "ts-file-count", (s) => s.byRole && s.byRole.test),
+      },
+      {
+        key: "effectFiles",
+        label: "effect files",
+        get: (r) => signalNumber(r, "files-using-effect-count", (s) => s.count),
+        sort: (r) => signalSort(r, "files-using-effect-count", (s) => s.count),
+      },
+      {
+        key: "effectImports",
+        label: "effect imports",
+        get: (r) => signalNumber(r, "effect-imports-per-file", (s) => s.importCount),
+        sort: (r) => signalSort(r, "effect-imports-per-file", (s) => s.importCount),
+      },
+      {
+        key: "packages",
+        label: "packages",
+        get: (r) => {
+          const signal = signalOf(r, "effect-packages-used");
+          return signal && Array.isArray(signal.packages) ? signal.packages.join(", ") : "";
+        },
+      },
+      {
+        key: "recordedAt",
+        label: "recorded",
+        get: (r) => isoDate(r.recordedAt),
+        sort: (r) => asText(r.recordedAt),
+      },
+    ],
+  });
+
+  // ---------------------------------------------------------------------
+  // run-summary.jsonl: RunSummary (src/domain/run-summary.ts) — one
+  // population snapshot per run ("out of the analysed repos, the adopters").
+  // ---------------------------------------------------------------------
+  Viz.registerRecordType("run-summary", {
+    label: "run summary",
+    test: (record) => "population" in record && "deepAnalysis" in record,
+    columns: [
+      {
+        key: "recordedAt",
+        label: "run",
+        get: (r) => isoDate(r.recordedAt),
+        sort: (r) => asText(r.recordedAt),
+      },
+      {
+        key: "analyzedRepos",
+        label: "analysed",
+        get: (r) => asText(r.population && r.population.analyzedRepos),
+        sort: (r) => Number(r.population && r.population.analyzedRepos),
+      },
+      {
+        key: "cloneFailures",
+        label: "clone failures",
+        get: (r) => asText(r.population && r.population.cloneFailures),
+        sort: (r) => Number(r.population && r.population.cloneFailures),
+      },
+      {
+        key: "adopters",
+        label: "adopters",
+        get: (r) => asText(r.population && r.population.adopters),
+        sort: (r) => Number(r.population && r.population.adopters),
+      },
+      {
+        key: "adopterRatio",
+        label: "adopter %",
+        get: (r) => percent(r.population && r.population.adopterRatio),
+        sort: (r) => Number(r.population && r.population.adopterRatio),
+      },
+      {
+        key: "analyzedAdopters",
+        label: "analysed adopters",
+        get: (r) => asText(r.deepAnalysis && r.deepAnalysis.analyzedAdopters),
+        sort: (r) => Number(r.deepAnalysis && r.deepAnalysis.analyzedAdopters),
+      },
+      {
+        key: "codeUsage",
+        label: "with code usage",
+        get: (r) => asText(r.deepAnalysis && r.deepAnalysis.adoptersWithCodeUsage),
+        sort: (r) => Number(r.deepAnalysis && r.deepAnalysis.adoptersWithCodeUsage),
+      },
+      {
+        key: "codeUsageRatio",
+        label: "code usage %",
+        get: (r) => percent(r.deepAnalysis && r.deepAnalysis.codeUsageRatio),
+        sort: (r) => Number(r.deepAnalysis && r.deepAnalysis.codeUsageRatio),
       },
     ],
   });

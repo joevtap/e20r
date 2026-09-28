@@ -69,6 +69,14 @@ check(
   "detects github-repo",
   Viz.detectRecordType({ stargazersCount: 12, fullName: "a/b" }) === "github-repo",
 );
+check(
+  "detects deep-analysis",
+  Viz.detectRecordType({ analysisStatus: "analyzed", repoId: 1 }) === "deep-analysis",
+);
+check(
+  "detects run summary",
+  Viz.detectRecordType({ population: {}, deepAnalysis: {} }) === "run-summary",
+);
 check("falls back to unknown", Viz.detectRecordType({ weird: true }) === "unknown");
 
 // --- signal summaries + fallback ---
@@ -85,26 +93,48 @@ check(
   Viz.summarizeSignal({ _tag: "brand-new-signal" }) === "brand-new-signal",
   Viz.summarizeSignal({ _tag: "brand-new-signal" }),
 );
+check(
+  "summarizes ts-file-count",
+  Viz.summarizeSignal({ _tag: "ts-file-count", total: 12, byRole: { source: 9, test: 3 } }).includes(
+    "12 ts files (3 test)",
+  ),
+);
+check(
+  "summarizes effect-imports-per-file",
+  Viz.summarizeSignal({ _tag: "effect-imports-per-file", importCount: 3, files: [{}, {}] }).includes(
+    "3 imports in 2 files",
+  ),
+);
+check(
+  "summarizes effect-packages-used",
+  Viz.summarizeSignal({ _tag: "effect-packages-used", packages: ["effect", "@effect/cli"] }) ===
+    "effect, @effect/cli",
+);
 check("renderSignal escapes HTML", !Viz.renderSignal({ _tag: "x<script>" }).includes("<script>"));
 
 // --- load sample data through the app API ---
 Viz.loadText(readFileSync(new URL("sample.jsonl", import.meta.url), "utf8"), "sample.jsonl");
 
 check(
-  "9 lines -> 8 records + 1 problem",
-  Viz.state.rows.length === 8 && Viz.state.problems.length === 1,
+  "13 lines -> 12 records + 1 problem",
+  Viz.state.rows.length === 12 && Viz.state.problems.length === 1,
   {
     rows: Viz.state.rows.length,
     problems: Viz.state.problems.length,
   },
 );
 check(
-  "tables rendered for both types",
-  html("tables").includes("clone state") && html("tables").includes("effect repo"),
+  "tables rendered for all types",
+  html("tables").includes("clone state") &&
+    html("tables").includes("effect repo") &&
+    html("tables").includes("deep analysis") &&
+    html("tables").includes("run summary"),
 );
 check("problem line listed", html("problems").includes("not JSON"));
 check("signal chips rendered", html("signal-filters").includes("effect-in-package-json"));
 check("summary shows counts", html("stats").includes("adopters"));
+check("summary shows usage tiles", html("stats").includes("adopter ratio"));
+check("summary shows package breakdown", html("stats").includes("@effect/vitest"));
 
 // --- search via the real event handler ---
 fire("search-input", "input", { target: { value: "effect-app" } });
@@ -152,6 +182,11 @@ check(
   "type filter works",
   html("tables").includes("effect repo") && !html("tables").includes("clone state"),
 );
+fire("type-select", "change", { target: { value: "deep-analysis" } });
+check(
+  "deep-analysis type filter works",
+  html("tables").includes("deep analysis") && !html("tables").includes("clone state"),
+);
 fire("type-select", "change", { target: { value: "all" } });
 
 // --- sorting via real handler ---
@@ -175,6 +210,16 @@ check(
   "detail renders raw JSON",
   html("detail-body").includes("&quot;fullName&quot;: &quot;acme/effect-app&quot;"),
 );
+
+// --- deep-analysis detail (line 10 of sample.jsonl is the analyzed effect-app) ---
+fire("tables", "click", {
+  target: {
+    closest: (sel) =>
+      sel === "th.sortable" ? null : { dataset: { line: "10", file: "sample.jsonl" } },
+  },
+});
+check("detail renders usage signals", html("detail-body").includes("effect imports per file"));
+check("detail lists per-file rows", html("detail-body").includes("src/Effect.ts [test]") || html("detail-body").includes("src/App.test.tsx [test]"));
 
 // --- clear ---
 fire("clear-btn", "click");

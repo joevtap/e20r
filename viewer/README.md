@@ -11,11 +11,15 @@ onto the page. Files are read locally in the browser and never uploaded.
 | --- | --- | --- |
 | `clone-state.jsonl` | `RepoCloneState` | `src/domain/clone-state.ts` |
 | `effect-repos.jsonl` | `EffectRepoState` | `src/domain/effect-repo.ts` |
+| `analysis-state.jsonl` | `AnalysisState` | `src/domain/analysis-state.ts` |
+| `run-summary.jsonl` | `RunSummary` | `src/domain/run-summary.ts` |
 | `repos.jsonl` | `GithubRepo` (crawl cache) | `src/domain/github.ts` |
 
 Features: full-text search, filters (record type, clone status, adopter,
 signal tags), sortable columns, per-row detail panel with rendered signals,
-and a small aggregation summary (counts per type/status/signal). Unknown
+and a small aggregation summary (counts per type/status/signal, the
+population ratios — "out of the analysed repos, the adopters" — effect-usage
+totals, and the effect packages used per analyzed repository). Unknown
 record shapes and unknown signal tags still load and render as raw JSON —
 nothing is rejected for being newer than the viewer.
 

@@ -116,7 +116,62 @@
         bySignal[tag] = (bySignal[tag] || 0) + 1;
       }
     }
-    return { byType, byStatus, bySignal, adopters };
+
+    // Population and effect-usage counters (EXTENSION POINT). Records are
+    // appended across runs, so they are deduped per record type (last record
+    // wins, like the pipeline's own state files) before counting; the same
+    // repository legitimately has one record per state file.
+    const latest = new Map();
+    for (const row of rows) {
+      if (row.record.repoId !== undefined) {
+        latest.set(`${row.type}:${row.record.repoId}`, row.record);
+      }
+    }
+
+    const usage = {
+      analyzedRepos: 0,
+      cloneFailures: 0,
+      adopters: 0,
+      analyzedAdopters: 0,
+      withCodeUsage: 0,
+      tsSource: 0,
+      tsTest: 0,
+      effectFiles: 0,
+      effectImports: 0,
+    };
+    const packages = {};
+
+    for (const record of latest.values()) {
+      if (record.cloneStatus !== undefined) {
+        if (record.cloneStatus === "cloned") usage.analyzedRepos += 1;
+        else usage.cloneFailures += 1;
+        if (record.adopter) usage.adopters += 1;
+      }
+
+      const using = Viz.signalOf(record, "files-using-effect-count");
+      if (record.analysisStatus === "analyzed") {
+        usage.analyzedAdopters += 1;
+        if (using && using.count > 0) usage.withCodeUsage += 1;
+      }
+      if (record.analysisStatus === undefined) continue;
+
+      const tsFiles = Viz.signalOf(record, "ts-file-count");
+      if (tsFiles && tsFiles.byRole) {
+        usage.tsSource += tsFiles.byRole.source || 0;
+        usage.tsTest += tsFiles.byRole.test || 0;
+      }
+      if (using) usage.effectFiles += using.count || 0;
+
+      const imports = Viz.signalOf(record, "effect-imports-per-file");
+      if (imports) usage.effectImports += imports.importCount || 0;
+
+      const used = Viz.signalOf(record, "effect-packages-used");
+      for (const name of (used && used.packages) || []) {
+        packages[name] = (packages[name] || 0) + 1;
+      }
+    }
+
+    return { byType, byStatus, bySignal, adopters, usage, packages };
   }
 
   // ------------------------------------------------------------------
@@ -146,6 +201,7 @@
 
   function renderStats(rows) {
     const summary = aggregate(rows);
+    const ratio = (part, total) => (total === 0 ? "0.0%" : `${((part / total) * 100).toFixed(1)}%`);
     const cells = [
       ["files", state.files.length],
       ["records", state.rows.length],
@@ -154,6 +210,34 @@
     ];
     for (const [status, count] of Object.entries(summary.byStatus)) cells.push([status, count]);
     for (const [tag, count] of Object.entries(summary.bySignal)) cells.push([tag, count]);
+
+    const usage = summary.usage;
+    if (usage.analyzedRepos > 0) {
+      cells.push(["adopter ratio", ratio(usage.adopters, usage.analyzedRepos)]);
+    }
+    if (usage.analyzedAdopters > 0) {
+      cells.push(["analysed for usage", usage.analyzedAdopters]);
+      cells.push(["with code usage", ratio(usage.withCodeUsage, usage.analyzedAdopters)]);
+    }
+    if (usage.tsSource + usage.tsTest > 0) {
+      cells.push(["ts files (src/test)", `${usage.tsSource} / ${usage.tsTest}`]);
+    }
+    if (usage.effectFiles > 0) {
+      cells.push(["effect files", usage.effectFiles]);
+      cells.push(["effect imports", usage.effectImports]);
+    }
+
+    const packageEntries = Object.entries(summary.packages).sort(
+      (a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])),
+    );
+    const packageHtml =
+      packageEntries.length === 0
+        ? ""
+        : `<div class="stat-row"><div class="stat"><b>${packageEntries
+            .slice(0, 10)
+            .map(([name, count]) => `${escapeHtml(name)} (${count})`)
+            .join(", ")}</b><span>effect packages (repos)</span></div></div>`;
+
     document.getElementById("stats").innerHTML =
       `<h2>Summary</h2><div class="stat-row">` +
       cells
@@ -162,7 +246,8 @@
             `<div class="stat"><b>${value}</b><span>${escapeHtml(label)}</span></div>`,
         )
         .join("") +
-      `</div>`;
+      `</div>` +
+      packageHtml;
   }
 
   function renderSignalFilters() {
