@@ -44,7 +44,7 @@ interface FileResult {
  * reported instead of dropped silently. The AST layer failing entirely
  * degrades to text-scanned imports without symbols.
  */
-export const effectUsageProbe: AnalysisProbe<UsageSignal> = (cloneDir) =>
+export const effectUsageProbe: AnalysisProbe<UsageSignal> = (cloneDir, _repo, runOptions) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -96,9 +96,10 @@ export const effectUsageProbe: AnalysisProbe<UsageSignal> = (cloneDir) =>
       );
 
     let parsed: Array<FileResult> = [];
-    let unparsed: ReadonlyArray<Candidate> = candidates;
 
-    if (candidates.length > 0) {
+    if (candidates.length > 0 && runOptions.ast) {
+      let unparsed: ReadonlyArray<Candidate> = candidates;
+
       const first = yield* Effect.exit(parseAll(candidates));
       if (Exit.isFailure(first)) {
         yield* Effect.logWarning(`AST usage analysis failed: ${Cause.pretty(first.cause)}`);
@@ -128,6 +129,10 @@ export const effectUsageProbe: AnalysisProbe<UsageSignal> = (cloneDir) =>
         );
       }
       parsed = [...parsed, ...unparsed.map(fallback)];
+    } else if (candidates.length > 0) {
+      // --no-ast: the text scanner is the only source — imports without
+      // symbol counts, and the scanner's documented blind spots.
+      parsed = candidates.map(fallback);
     }
 
     const withImports = Array.filter(parsed, (result) => result.usage.imports.length > 0);

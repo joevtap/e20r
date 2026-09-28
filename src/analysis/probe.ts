@@ -1,7 +1,7 @@
 import { Array, Effect } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import type * as Path from "effect/Path";
-import type { GithubRepo } from "../domain/github.ts";
+import type { CloneTarget } from "../github/clone.ts";
 import type { Signal } from "../domain/clone-state.ts";
 import { effectPackageJsonProbe } from "./probes/effect-package-json.ts";
 import { bunCatalogProbe, pnpmCatalogProbe } from "./probes/catalog.ts";
@@ -19,7 +19,7 @@ import { packageManagerProbe } from "./probes/package-manager.ts";
  */
 export type Probe<S extends Signal = Signal> = (
   cloneDir: string,
-  repo: GithubRepo,
+  repo: CloneTarget,
 ) => Effect.Effect<ReadonlyArray<S>, never, FileSystem.FileSystem | Path.Path>;
 
 const probes: ReadonlyArray<Probe> = [
@@ -34,7 +34,7 @@ const probes: ReadonlyArray<Probe> = [
  */
 export const analyzeRepo = (
   cloneDir: string,
-  repo: GithubRepo,
+  repo: CloneTarget,
 ): Effect.Effect<ReadonlyArray<Signal>, never, FileSystem.FileSystem | Path.Path> =>
   Effect.forEach(probes, (probe) => probe(cloneDir, repo), {
     concurrency: "unbounded",

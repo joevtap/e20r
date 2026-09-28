@@ -2,7 +2,18 @@ import { Cause, Effect, Fiber, Option, Schedule, Stream } from "effect";
 import type { Scope } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import type { GithubRepo } from "../domain/github.ts";
+
+/**
+ * The minimum identity a clone needs: repository name, the branch to clone
+ * and the URL to clone from. `GithubRepo` satisfies it structurally, and so
+ * does the deep-analysis stage's adopter record — cloning must never depend
+ * on the crawl cache being complete.
+ */
+export interface CloneTarget {
+  readonly fullName: string;
+  readonly defaultBranch: string;
+  readonly htmlUrl: string;
+}
 
 interface GitOutput {
   readonly stdout: string;
@@ -59,7 +70,7 @@ const gitOutput = (
   );
 
 const attemptClone = (
-  repo: GithubRepo,
+  repo: CloneTarget,
   targetDir: string,
 ): Effect.Effect<void, string, ChildProcessSpawner.ChildProcessSpawner | Scope.Scope> =>
   Effect.gen(function* () {
@@ -97,7 +108,7 @@ const describeRevParseError = (error: string | Cause.TimeoutError): string =>
   Cause.isTimeoutError(error) ? "git rev-parse HEAD timed out after 30 seconds" : error;
 
 const cloneAttempt = (
-  repo: GithubRepo,
+  repo: CloneTarget,
   targetDir: string,
 ): Effect.Effect<void, string, ChildProcessSpawner.ChildProcessSpawner> =>
   attemptClone(repo, targetDir).pipe(
@@ -212,7 +223,7 @@ export interface CloneOutcome {
  * refuses non-empty destinations), and is retried with backoff.
  */
 const cloneRepo = (
-  repo: GithubRepo,
+  repo: CloneTarget,
   targetDir: string,
 ): Effect.Effect<void, string, ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem> =>
   Effect.gen(function* () {
@@ -232,7 +243,7 @@ const cloneRepo = (
  * and cloned again, so the pipeline can never get stuck on a stale clone.
  */
 export const ensureCloned = (
-  repo: GithubRepo,
+  repo: CloneTarget,
   cloneDir: string,
 ): Effect.Effect<
   CloneOutcome,

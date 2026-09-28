@@ -37,6 +37,20 @@ const AppConfigOverridesSchema = Schema.Struct({
   cloneConcurrency: Schema.FiniteFromString.pipe(
     Schema.check(Schema.isInt(), Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(64)),
   ),
+
+  /**
+   * Deep-analysis (AST) concurrency, deliberately separate from the clone
+   * concurrency: each AST session spawns a language server that loads whole
+   * TypeScript projects and can use hundreds of MB to a few GB. Too many at
+   * once overwhelm small machines. Cloning is IO-bound and safe to run more
+   * widely than parsing.
+   */
+  analysisConcurrency: Schema.FiniteFromString.pipe(
+    Schema.check(Schema.isInt(), Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(16)),
+  ),
+
+  /** Skip the TypeScript AST phase entirely (text-scanned imports, no symbol counts). */
+  noAst: Schema.Boolean,
   clean: Schema.Boolean,
   fresh: Schema.Boolean,
   fromCache: Schema.Boolean,
@@ -54,6 +68,10 @@ const AppConfigOverridesInputSchema = Schema.Struct({
   cloneConcurrency: Schema.optionalKey(
     Schema.toType(AppConfigOverridesSchema.fields.cloneConcurrency),
   ),
+  analysisConcurrency: Schema.optionalKey(
+    Schema.toType(AppConfigOverridesSchema.fields.analysisConcurrency),
+  ),
+  noAst: Schema.optionalKey(Schema.toType(AppConfigOverridesSchema.fields.noAst)),
   clean: Schema.optionalKey(Schema.toType(AppConfigOverridesSchema.fields.clean)),
   fresh: Schema.optionalKey(Schema.toType(AppConfigOverridesSchema.fields.fresh)),
   fromCache: Schema.optionalKey(Schema.toType(AppConfigOverridesSchema.fields.fromCache)),
@@ -74,6 +92,9 @@ export type AppConfigOverrides = Schema.Schema.Type<typeof AppConfigOverridesInp
  * - Cache disabling switch with a default value of false.
  * - Clone deletion after successful analysis switch with a default value of false.
  * - Parallel clone count with a default value of 4.
+ * - Parallel deep-analysis count (--analysis-concurrency) with a default
+ *   value of 1; each AST session can use hundreds of MB to a few GB.
+ * - AST skip switch (--no-ast) with a default value of false.
  * - Cache cleaning switch (--clean) with a default value of false.
  * - Fresh re-run switch (--fresh) with a default value of false.
  * - Search-from-cache switch (--from-cache) with a default value of false.
@@ -93,6 +114,10 @@ const AppConfigSchema = Schema.Struct({
       cloneConcurrency: fields.cloneConcurrency.pipe(
         Schema.withDecodingDefaultKey(Effect.succeed("4")),
       ),
+      analysisConcurrency: fields.analysisConcurrency.pipe(
+        Schema.withDecodingDefaultKey(Effect.succeed("1")),
+      ),
+      noAst: fields.noAst.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
       clean: fields.clean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
       fresh: fields.fresh.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
       fromCache: fields.fromCache.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
@@ -182,6 +207,16 @@ export const makeAppConfigOverlayLayer = (
           ? {}
           : {
               cloneConcurrency: validated.cloneConcurrency,
+            }),
+        ...(validated.analysisConcurrency === undefined
+          ? {}
+          : {
+              analysisConcurrency: validated.analysisConcurrency,
+            }),
+        ...(validated.noAst === undefined
+          ? {}
+          : {
+              noAst: validated.noAst,
             }),
         ...(validated.clean === undefined
           ? {}

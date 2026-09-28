@@ -95,9 +95,10 @@ export interface CacheDirValue {
 
   /**
    * Directory where the clone of the given repository lives (or should be
-   * cloned into): `<root>/clones/<org>/<name>`.
+   * cloned into): `<root>/clones/<org>/<name>`. Only the repository name is
+   * needed, so deep analysis can place clones without the crawl cache.
    */
-  readonly cloneDirFor: (repo: GithubRepo) => string;
+  readonly cloneDirFor: (repo: Pick<GithubRepo, "fullName">) => string;
 
   /**
    * Appends crawled repositories to the cache file, skipping the ones already
@@ -209,8 +210,39 @@ export const CacheDirLayer = Layer.effect(
 
     // --clean starts the run from an empty cache: every state file and every
     // clone is removed before anything is loaded, so the run re-derives all
-    // state from scratch instead of resuming.
+    // state from scratch instead of resuming. Loud, because it is destructive:
+    // the log says exactly what disappears.
     if (config.clean) {
+      const recordLines = (file: string) =>
+        Effect.map(
+          Effect.option(fs.readFileString(file)),
+          (contents) =>
+            Option.getOrElse(contents, () => "")
+              .split("\n")
+              .filter((line) => line.trim() !== "").length,
+        );
+
+      const [repos, cloneStates, effectRepos, analyses, summaries, cloneDirs] = yield* Effect.all(
+        [
+          recordLines(reposFile),
+          recordLines(cloneStateFile),
+          recordLines(effectReposFile),
+          recordLines(analysisStateFile),
+          recordLines(runSummaryFile),
+          Effect.map(
+            Effect.option(fs.glob("*/*", { root: clonesDir })),
+            (found) => Option.getOrElse(found, () => []).length,
+          ),
+        ],
+        { concurrency: "unbounded" },
+      );
+
+      yield* Effect.log(
+        `--clean: wiping cache at ${path.resolve(root)} — ${repos} repo records, ` +
+          `${cloneStates} clone states, ${effectRepos} adopter selections, ${analyses} analyses, ` +
+          `${summaries} run summaries, ${cloneDirs} clones`,
+      );
+
       for (const file of [
         reposFile,
         cloneStateFile,
@@ -265,10 +297,20 @@ export const CacheDirLayer = Layer.effect(
       analysisStateById.set(state.repoId, state);
     }
 
+    // What the run resumes from, said up front: silent state loss (a wiped
+    // cache, a wrong working directory) must be visible immediately.
+    yield* Effect.log(
+      `Cache at ${path.resolve(root)}: ${reposById.size} repo records, ` +
+        `${cloneStatesById.size} clone states, ${effectRepoIds.size} adopter selections, ` +
+        `${analysisStateById.size} analyses`,
+    );
+
     /**
      * Appends records to a JSONL file, skipping the ids already seen and
-     * updating the live id bookkeeping. A single `a+` write per batch keeps
-     * concurrent appends line-atomic.
+     * updating the live id bookkeeping. `onNew` indexes freshly written
+     * records into the live lookup maps, so later stages of the same run see
+     * them. A single `a+` write per batch keeps concurrent appends
+     * line-atomic.
      */
     const appendNewRecords = <A>(
       file: string,
@@ -276,6 +318,7 @@ export const CacheDirLayer = Layer.effect(
       records: ReadonlyArray<A>,
       encode: (record: A) => unknown,
       getId: (record: A) => number,
+      onNew?: (record: A) => void,
     ): Effect.Effect<number, PlatformError> =>
       Effect.gen(function* () {
         const fresh = records.filter((record) => !seenIds.has(getId(record)));
@@ -291,6 +334,7 @@ export const CacheDirLayer = Layer.effect(
 
         for (const record of fresh) {
           seenIds.add(getId(record));
+          onNew?.(record);
         }
 
         return fresh.length;
@@ -347,7 +391,18 @@ export const CacheDirLayer = Layer.effect(
       cloneDirFor: (repo) => path.join(clonesDir, ...repo.fullName.split("/")),
 
       appendRepos: (repos) =>
-        appendNewRecords(reposFile, repoIds, repos, encodeRepo, (repo) => repo.id),
+        appendNewRecords(
+          reposFile,
+          repoIds,
+          repos,
+          encodeRepo,
+          (repo) => repo.id,
+          (repo) => {
+            // Index into the live map as well: repos crawled in this run must
+            // be resolvable by the later stages of this same run.
+            reposById.set(repo.id, repo);
+          },
+        ),
       appendEffectRepos: (effectRepos) =>
         appendNewRecords(
           effectReposFile,

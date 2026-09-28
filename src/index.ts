@@ -43,6 +43,8 @@ const parseNextLink = (header: string): Option.Option<string> =>
     Option.flatMap((link) => Option.fromUndefinedOr(/<([^>]+)>/.exec(link)?.[1])),
   );
 
+const secondsSince = (started: number): string => `${((Date.now() - started) / 1000).toFixed(1)}s`;
+
 const e20r = Command.make(
   "e20r",
   {
@@ -65,6 +67,18 @@ const e20r = Command.make(
     ),
     cloneConcurrency: Flag.integer("clone-concurrency").pipe(
       Flag.withDescription("Number of repositories cloned and analyzed in parallel"),
+      Flag.optional,
+    ),
+    analysisConcurrency: Flag.integer("analysis-concurrency").pipe(
+      Flag.withDescription(
+        "Number of deep-analysis (AST) sessions in parallel (1-16; each can use hundreds of MB to a few GB)",
+      ),
+      Flag.optional,
+    ),
+    noAst: Flag.boolean("no-ast").pipe(
+      Flag.withDescription(
+        "Skip the TypeScript AST phase: usage signals come from the text scanner, no symbol counts",
+      ),
       Flag.optional,
     ),
     clean: Flag.boolean("clean").pipe(
@@ -391,12 +405,39 @@ const e20r = Command.make(
         yield* Effect.log(
           Option.isNone(recovered)
             ? `Failed to recover ${recoveredSelections.length} prior Effect adopter selections`
-            : `Recovered ${recovered.value} prior Effect adopter selections`,
+            : `Recovered ${recoveredSelections.length} prior Effect adopter selections (${recovered.value} newly recorded)`,
         );
       }
 
       const effectRepos: Array<EffectRepoState> = [];
       let effectReposLost = 0;
+
+      // Clone-phase progress: one line per repository plus a rollup every
+      // ~30 seconds, so a long cloning stretch is never silent.
+      const progress = {
+        completed: 0,
+        failed: 0,
+        started: Date.now(),
+        lastRollup: Date.now(),
+      };
+
+      const rollup = Effect.sync(() => {
+        const now = Date.now();
+        if (now - progress.lastRollup < 30_000) return;
+        progress.lastRollup = now;
+        const elapsed = (now - progress.started) / 1000;
+        const rate = elapsed > 0 ? progress.completed / elapsed : 0;
+        const remaining = rate > 0 ? (topRepos.length - progress.completed) / rate : 0;
+        return (
+          `cloning ${progress.completed}/${topRepos.length} · ${progress.failed} failures · ` +
+          `${Math.round(elapsed / 60)}m elapsed · ~${Math.round(remaining / 60)}m left`
+        );
+      });
+
+      const progressLog = Effect.gen(function* () {
+        const line = yield* rollup;
+        if (line !== undefined) yield* Effect.log(line);
+      });
 
       const recordCloneState = (cloneState: RepoCloneState): Effect.Effect<boolean> =>
         Effect.gen(function* () {
@@ -416,8 +457,13 @@ const e20r = Command.make(
       const clonedRepos = yield* Effect.forEach(
         topRepos,
         Effect.fn("clone-and-select")(function* (repo: GithubRepo) {
+          const started = Date.now();
+          const where = `[${++progress.completed}/${topRepos.length}]`;
+
           // --fresh re-processes recorded repositories as well.
           if (!config.fresh && cloneStatesById.get(repo.id)?.cloneStatus === "cloned") {
+            yield* Effect.log(`${where} ${repo.fullName}: already recorded (skipped)`);
+            yield* progressLog;
             return undefined;
           }
 
@@ -428,7 +474,12 @@ const e20r = Command.make(
 
           if (Result.isFailure(outcome)) {
             cloneFailures++;
+            progress.failed++;
             const cloneError = Option.getOrUndefined(Result.getFailure(outcome));
+            yield* Effect.log(
+              `${where} ${repo.fullName}: clone failed in ${secondsSince(started)} — ${cloneError ?? "unknown error"}`,
+            );
+            yield* progressLog;
             const cloneState: RepoCloneState = {
               repoId: repo.id,
               fullName: repo.fullName,
@@ -463,6 +514,12 @@ const e20r = Command.make(
           };
 
           const wasRecorded = yield* recordCloneState(cloneState);
+
+          yield* Effect.log(
+            `${where} ${repo.fullName}: ${outcome.success.fresh ? "cloned" : "reused"} in ${secondsSince(started)}` +
+              ` (★${repo.stargazersCount}${cloneState.adopter ? ", adopter" : ""}, ${signals.length} signals)`,
+          );
+          yield* progressLog;
 
           const { commit } = cloneState;
           if (cloneState.adopter && commit !== undefined) {
@@ -522,15 +579,18 @@ const e20r = Command.make(
       if (config.skipAnalysis) {
         yield* Effect.log("Deep-analysis stage skipped (--skip-analysis)");
       } else {
+        yield* Effect.log(
+          `Deep analysis: ${adopters.size} adopters, AST ${config.noAst ? "disabled (--no-ast)" : `enabled (concurrency ${config.analysisConcurrency})`}`,
+        );
         const analyzed = yield* runDeepAnalysis([...adopters.values()], {
           fresh: config.fresh,
           ephemeral: config.ephemeral,
-          concurrency: config.cloneConcurrency,
+          concurrency: config.analysisConcurrency,
+          ast: !config.noAst,
         });
         yield* Effect.log(
           `Deep analysis: ${analyzed.analyzed} adopters analyzed (${analyzed.codeUsage} with effect in code), ` +
-            `${analyzed.alreadyRecorded} already recorded, ${analyzed.failures} failures` +
-            `${analyzed.missingRepos > 0 ? `, ${analyzed.missingRepos} not in the crawl cache` : ""}.`,
+            `${analyzed.alreadyRecorded} already recorded, ${analyzed.failures} failures.`,
         );
       }
 
@@ -596,6 +656,8 @@ const e20r = Command.make(
       noCache,
       ephemeral,
       cloneConcurrency,
+      analysisConcurrency,
+      noAst,
       clean,
       fresh,
       fromCache,
@@ -628,6 +690,14 @@ const e20r = Command.make(
             ...Option.match(cloneConcurrency, {
               onNone: () => {},
               onSome: (value) => ({ cloneConcurrency: value }),
+            }),
+            ...Option.match(analysisConcurrency, {
+              onNone: () => {},
+              onSome: (value) => ({ analysisConcurrency: value }),
+            }),
+            ...Option.match(noAst, {
+              onNone: () => {},
+              onSome: (value) => ({ noAst: value }),
             }),
             ...Option.match(clean, {
               onNone: () => {},
