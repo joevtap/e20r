@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
 import { createContext, runInContext } from "node:vm";
 
 const listeners = {};
+const classes = new Map();
 const element = (id) => ({
   id,
   innerHTML: "",
@@ -23,6 +24,11 @@ const element = (id) => ({
 });
 const elements = new Map();
 const document = {
+  body: {
+    classList: {
+      toggle: (name, on) => classes.set(name, Boolean(on)),
+    },
+  },
   getElementById: (id) => {
     if (!elements.has(id)) elements.set(id, element(id));
     return elements.get(id);
@@ -37,7 +43,7 @@ const context = createContext({
   },
   console,
 });
-for (const file of ["records.js", "signals.js", "app.js"]) {
+for (const file of ["records.js", "signals.js", "charts.js", "app.js"]) {
   runInContext(readFileSync(new URL(file, import.meta.url), "utf8"), context, {
     filename: file,
   });
@@ -66,7 +72,11 @@ check(
   Viz.detectRecordType({ defaultBranch: "main", commit: "a".repeat(40) }) === "effect-repo",
 );
 check(
-  "detects github-repo",
+  "detects github-repo (wire shape)",
+  Viz.detectRecordType({ stargazers_count: 12, full_name: "a/b" }) === "github-repo",
+);
+check(
+  "detects github-repo (camelCase shape)",
   Viz.detectRecordType({ stargazersCount: 12, fullName: "a/b" }) === "github-repo",
 );
 check(
@@ -129,8 +139,8 @@ check("renderSignal escapes HTML", !Viz.renderSignal({ _tag: "x<script>" }).incl
 Viz.loadText(readFileSync(new URL("sample.jsonl", import.meta.url), "utf8"), "sample.jsonl");
 
 check(
-  "14 lines -> 13 records + 1 problem",
-  Viz.state.rows.length === 13 && Viz.state.problems.length === 1,
+  "15 lines -> 14 records + 1 problem",
+  Viz.state.rows.length === 14 && Viz.state.problems.length === 1,
   {
     rows: Viz.state.rows.length,
     problems: Viz.state.problems.length,
@@ -141,13 +151,40 @@ check(
   html("tables").includes("clone state") &&
     html("tables").includes("effect repo") &&
     html("tables").includes("deep analysis") &&
-    html("tables").includes("run summary"),
+    html("tables").includes("run summary") &&
+    html("tables").includes("crawled repository"),
 );
 check("problem line listed", html("problems").includes("not JSON"));
 check("signal chips rendered", html("signal-filters").includes("effect-in-package-json"));
+check("file summary rendered", html("file-summary").includes("records"));
 check("summary shows counts", html("stats").includes("adopters"));
 check("summary shows usage tiles", html("stats").includes("adopter ratio"));
 check("summary shows package breakdown", html("stats").includes("@effect/vitest"));
+check("dashboard visible once data is loaded", classes.get("is-empty") === false);
+
+// --- charts ---
+check(
+  "charts render cards",
+  html("charts-grid").includes("chart-card") &&
+    html("chart-population").includes("Population") &&
+    html("chart-depth").includes("Adoption depth"),
+);
+check(
+  "import histogram renders bins",
+  html("chart-imports").includes("Effect imports per file") &&
+    html("chart-imports").includes("hist-bar"),
+);
+check(
+  "package chart uses data",
+  html("chart-packages").includes("@effect/vitest") || html("chart-packages").includes("effect"),
+  html("chart-packages").slice(0, 200),
+);
+check(
+  "symbol chart uses data",
+  html("chart-symbols").includes("Effect.gen"),
+  html("chart-symbols").slice(0, 200),
+);
+check("trend chart renders svg", html("chart-trend").includes("trend-svg"));
 
 // --- search via the real event handler ---
 fire("search-input", "input", { target: { value: "effect-app" } });
@@ -251,6 +288,7 @@ check("detail renders normalized symbols", html("detail-body").includes("Effect.
 // --- clear ---
 fire("clear-btn", "click");
 check("clear empties state", Viz.state.rows.length === 0 && Viz.state.problems.length === 0);
+check("empty state returns to the guide", classes.get("is-empty") === true);
 
 if (failures > 0) {
   console.error(`\n${failures} FAILURES`);

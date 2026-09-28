@@ -15,13 +15,13 @@ onto the page. Files are read locally in the browser and never uploaded.
 | `run-summary.jsonl` | `RunSummary` | `src/domain/run-summary.ts` |
 | `repos.jsonl` | `GithubRepo` (crawl cache) | `src/domain/github.ts` |
 
-Features: full-text search, filters (record type, clone status, adopter,
-signal tags), sortable columns, per-row detail panel with rendered signals,
-and a small aggregation summary (counts per type/status/signal, the
-population ratios — "out of the analysed repos, the adopters" — effect-usage
-totals, and the effect packages used per analyzed repository). Unknown
-record shapes and unknown signal tags still load and render as raw JSON —
-nothing is rejected for being newer than the viewer.
+Features: a "what each file reveals" guide, full-text search, filters (record
+type, clone status, adopter, signal tags), sortable columns, a per-row detail
+panel with rendered signals, summary tiles, and an insights grid (population
+bars, adoption ratios over runs, an effect-imports-per-file histogram, top
+effect packages, top AST-counted symbols, adoption depth per repository).
+Unknown record shapes and unknown signal tags still load and render as raw
+JSON — nothing is rejected for being newer than the viewer.
 
 Lines that fail to parse as JSON objects are skipped and listed under
 "Skipped lines". That is the only validation: the viewer trusts records to
@@ -31,11 +31,12 @@ match the schemas above.
 
 | File | Role |
 | --- | --- |
-| `index.html` | Page structure. New panels/filters get an element here. |
-| `style.css` | Minimal styling. |
+| `index.html` | Page structure: hero/loader, the "what each file reveals" guide, summary, insights, filters, tables, detail. New panels get an element here. |
+| `style.css` | Minimal styling (light and dark via `prefers-color-scheme`). |
 | `records.js` | **Record type registry**: how each JSONL record is detected and columned. |
 | `signals.js` | **Signal registry**: how each probe signal is summarized and rendered. |
-| `app.js` | Loading, filtering, sorting, aggregation, rendering, event wiring. |
+| `charts.js` | **Chart primitives**: horizontal bars, histograms and SVG trends (`Viz.charts.*`). |
+| `app.js` | Loading, per-row derivation, filtering, sorting, aggregation, charts, rendering, event wiring. |
 | `sample.jsonl` | Fixture used by `smoke.mjs`; also handy to try the UI. |
 | `smoke.mjs` | Headless test (`node smoke.mjs`). Run it after any change. |
 
@@ -110,8 +111,14 @@ Filters live in three places (all small, greppable):
 ### Adding an aggregation
 
 Extend the `aggregate()` function in `app.js` (marked `EXTENSION POINT`);
-it returns plain counters that `renderStats()` displays as tiles. Keep it
-cheap — it runs on every keystroke.
+it returns plain counters that `renderStats()` displays as tiles and
+`renderCharts()` turns into charts (`Viz.charts.bars|histogram|trend` in
+`charts.js`). Keep it cheap — it runs on every keystroke.
+
+Per-row numbers are computed once at load time in `deriveRow()` (also marked
+`EXTENSION POINT`): put anything expensive there and read it back from
+`row.derived`, so filtering and charting never walk huge nested signals
+again.
 
 ### Adding a detail rendering
 

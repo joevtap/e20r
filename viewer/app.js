@@ -1,6 +1,7 @@
 /**
  * Viewer application: loads local JSONL files, validates records minimally,
- * and renders searchable / filterable / sortable tables with aggregation.
+ * and renders searchable / filterable / sortable tables, summary tiles and
+ * charts.
  *
  * Extension points are marked with "EXTENSION POINT" comments; see README.md.
  */
@@ -29,9 +30,83 @@
 
   const MAX_ROWS = 500;
 
+  /** Fixed bins for "effect imports per effect-using file". */
+  const IMPORT_BINS = [
+    { label: "1", min: 1, max: 1 },
+    { label: "2", min: 2, max: 2 },
+    { label: "3", min: 3, max: 3 },
+    { label: "4", min: 4, max: 4 },
+    { label: "5–9", min: 5, max: 9 },
+    { label: "10–19", min: 10, max: 19 },
+    { label: "20–49", min: 20, max: 49 },
+    { label: "50–99", min: 50, max: 99 },
+    { label: "100+", min: 100, max: Infinity },
+  ];
+
   // ------------------------------------------------------------------
-  // Loading and minimal validation
+  // Loading, minimal validation and per-row derivation
   // ------------------------------------------------------------------
+
+  /**
+   * Derived numbers are computed once per row at load time (EXTENSION POINT:
+   * cheap per-keystroke aggregation depends on this), so filtering, sorting
+   * and chart rendering never walk huge nested signals again.
+   */
+  function deriveRow(record) {
+    const derived = {
+      search: JSON.stringify(record).toLowerCase(),
+      // selection stage
+      cloned: record.cloneStatus === "cloned",
+      adopter: Boolean(record.adopter),
+      // deep-analysis stage
+      analyzed: record.analysisStatus === "analyzed",
+      tsSource: 0,
+      tsTest: 0,
+      tsTotal: 0,
+      effectFiles: 0,
+      effectImports: 0,
+      packages: [],
+      symbols: null,
+      importBins: null,
+    };
+
+    if (record.analysisStatus !== undefined) {
+      const tsFiles = Viz.signalOf(record, "ts-file-count");
+      if (tsFiles && tsFiles.byRole) {
+        derived.tsSource = tsFiles.byRole.source || 0;
+        derived.tsTest = tsFiles.byRole.test || 0;
+        derived.tsTotal = tsFiles.total || derived.tsSource + derived.tsTest;
+      }
+      const using = Viz.signalOf(record, "files-using-effect-count");
+      if (using) derived.effectFiles = using.count || 0;
+
+      const imports = Viz.signalOf(record, "effect-imports-per-file");
+      if (imports) {
+        derived.effectImports = imports.importCount || 0;
+        const bins = new Array(IMPORT_BINS.length).fill(0);
+        for (const file of imports.files || []) {
+          const count = (file.imports || []).length;
+          const index = IMPORT_BINS.findIndex((bin) => count >= bin.min && count <= bin.max);
+          if (index >= 0) bins[index] += 1;
+        }
+        derived.importBins = bins;
+      }
+
+      const used = Viz.signalOf(record, "effect-packages-used");
+      if (used) derived.packages = used.packages || [];
+
+      const symbols = new Map();
+      for (const signal of record.signals || []) {
+        if (signal._tag !== "effect-symbols-per-file") continue;
+        for (const usage of signal.symbols || []) {
+          symbols.set(usage.symbol, (symbols.get(usage.symbol) || 0) + (usage.count || 0));
+        }
+      }
+      if (symbols.size > 0) derived.symbols = symbols;
+    }
+
+    return derived;
+  }
 
   function parseLine(text, file, lineNo) {
     if (text.trim() === "") return;
@@ -51,6 +126,7 @@
       file: file,
       line: lineNo,
       record,
+      derived: deriveRow(record),
     });
   }
 
@@ -92,7 +168,7 @@
         const tags = (row.record.signals || []).map((signal) => signal._tag);
         if (!tags.some((tag) => state.signals.has(tag))) return false;
       }
-      if (query !== "" && !JSON.stringify(row.record).toLowerCase().includes(query)) return false;
+      if (query !== "" && !row.derived.search.includes(query)) return false;
       return true;
     });
   }
@@ -110,21 +186,21 @@
       byType[row.type] = (byType[row.type] || 0) + 1;
       const status = row.record.cloneStatus;
       if (status !== undefined) byStatus[status] = (byStatus[status] || 0) + 1;
-      if (row.record.adopter) adopters += 1;
+      if (row.derived.adopter) adopters += 1;
       for (const signal of row.record.signals || []) {
         const tag = signal._tag || "signal";
         bySignal[tag] = (bySignal[tag] || 0) + 1;
       }
     }
 
-    // Population and effect-usage counters (EXTENSION POINT). Records are
-    // appended across runs, so they are deduped per record type (last record
-    // wins, like the pipeline's own state files) before counting; the same
-    // repository legitimately has one record per state file.
+    // Population and effect-usage counters. Records are appended across
+    // runs, so they are deduped per record type (last record wins, like the
+    // pipeline's own state files) before counting; the same repository
+    // legitimately has one record per state file.
     const latest = new Map();
     for (const row of rows) {
       if (row.record.repoId !== undefined) {
-        latest.set(`${row.type}:${row.record.repoId}`, row.record);
+        latest.set(`${row.type}:${row.record.repoId}`, row);
       }
     }
 
@@ -140,38 +216,80 @@
       effectImports: 0,
     };
     const packages = {};
+    const symbols = new Map();
+    const importBins = new Array(IMPORT_BINS.length).fill(0);
+    const depth = [];
 
-    for (const record of latest.values()) {
-      if (record.cloneStatus !== undefined) {
-        if (record.cloneStatus === "cloned") usage.analyzedRepos += 1;
+    for (const row of latest.values()) {
+      const derived = row.derived;
+      if (row.record.cloneStatus !== undefined) {
+        if (derived.cloned) usage.analyzedRepos += 1;
         else usage.cloneFailures += 1;
-        if (record.adopter) usage.adopters += 1;
+        if (derived.adopter) usage.adopters += 1;
       }
+      if (row.record.analysisStatus === undefined) continue;
 
-      const using = Viz.signalOf(record, "files-using-effect-count");
-      if (record.analysisStatus === "analyzed") {
+      if (derived.analyzed) {
         usage.analyzedAdopters += 1;
-        if (using && using.count > 0) usage.withCodeUsage += 1;
+        if (derived.effectFiles > 0) usage.withCodeUsage += 1;
       }
-      if (record.analysisStatus === undefined) continue;
+      usage.tsSource += derived.tsSource;
+      usage.tsTest += derived.tsTest;
+      usage.effectFiles += derived.effectFiles;
+      usage.effectImports += derived.effectImports;
 
-      const tsFiles = Viz.signalOf(record, "ts-file-count");
-      if (tsFiles && tsFiles.byRole) {
-        usage.tsSource += tsFiles.byRole.source || 0;
-        usage.tsTest += tsFiles.byRole.test || 0;
-      }
-      if (using) usage.effectFiles += using.count || 0;
-
-      const imports = Viz.signalOf(record, "effect-imports-per-file");
-      if (imports) usage.effectImports += imports.importCount || 0;
-
-      const used = Viz.signalOf(record, "effect-packages-used");
-      for (const name of (used && used.packages) || []) {
+      for (const name of derived.packages) {
         packages[name] = (packages[name] || 0) + 1;
+      }
+      if (derived.symbols) {
+        for (const [symbol, count] of derived.symbols) {
+          symbols.set(symbol, (symbols.get(symbol) || 0) + count);
+        }
+      }
+      if (derived.importBins) {
+        derived.importBins.forEach((count, index) => {
+          importBins[index] += count;
+        });
+      }
+      if (derived.tsTotal > 0 && derived.effectFiles > 0) {
+        depth.push({
+          label: row.record.fullName || `repo ${row.record.repoId}`,
+          value: (derived.effectFiles / derived.tsTotal) * 100,
+          hint: `${derived.effectFiles} of ${derived.tsTotal} TypeScript files use Effect`,
+        });
       }
     }
 
-    return { byType, byStatus, bySignal, adopters, usage, packages };
+    // Population ratios over runs, from the run-summary records. Labels are
+    // unique even for several runs on the same day (they collapse otherwise).
+    const seenAt = new Map();
+    const runs = rows
+      .filter((row) => row.record.population !== undefined && row.record.deepAnalysis !== undefined)
+      .map((row) => {
+        const stamp = String(row.record.recordedAt || "");
+        const base = stamp.slice(5, 16).replace("T", " ") || "run";
+        const seen = (seenAt.get(base) || 0) + 1;
+        seenAt.set(base, seen);
+        return {
+          at: seen > 1 ? `${base} #${seen}` : base,
+          adopterRatio: Number(row.record.population.adopterRatio) || 0,
+          codeUsageRatio: Number(row.record.deepAnalysis.codeUsageRatio) || 0,
+        };
+      })
+      .sort((left, right) => (left.at < right.at ? -1 : left.at > right.at ? 1 : 0));
+
+    return {
+      byType,
+      byStatus,
+      bySignal,
+      adopters,
+      usage,
+      packages,
+      symbols,
+      importBins,
+      depth,
+      runs,
+    };
   }
 
   // ------------------------------------------------------------------
@@ -193,10 +311,25 @@
 
   function render() {
     const rows = filteredRows();
+    document.body.classList.toggle("is-empty", state.rows.length === 0);
     renderStats(rows);
+    renderCharts(rows);
     renderSignalFilters();
     renderTables(rows);
     renderProblems();
+    renderFileSummary();
+  }
+
+  function renderFileSummary() {
+    const container = document.getElementById("file-summary");
+    if (state.files.length === 0) {
+      container.innerHTML = "";
+      return;
+    }
+    container.innerHTML =
+      `Loaded <b>${state.files.length}</b> file${state.files.length === 1 ? "" : "s"} · ` +
+      `<b>${state.rows.length}</b> records` +
+      (state.problems.length > 0 ? ` · <b>${state.problems.length}</b> skipped lines` : "");
   }
 
   function renderStats(rows) {
@@ -233,21 +366,92 @@
     const packageHtml =
       packageEntries.length === 0
         ? ""
-        : `<div class="stat-row"><div class="stat"><b>${packageEntries
-            .slice(0, 10)
+        : `<div class="stat-row"><div class="stat stat-wide"><span>effect packages (repos)</span><b>${packageEntries
+            .slice(0, 12)
             .map(([name, count]) => `${escapeHtml(name)} (${count})`)
-            .join(", ")}</b><span>effect packages (repos)</span></div></div>`;
+            .join(" · ")}</b></div></div>`;
 
     document.getElementById("stats").innerHTML =
       `<h2>Summary</h2><div class="stat-row">` +
       cells
         .map(
           ([label, value]) =>
-            `<div class="stat"><b>${value}</b><span>${escapeHtml(label)}</span></div>`,
+            `<div class="stat"><b>${escapeHtml(value)}</b><span>${escapeHtml(label)}</span></div>`,
         )
         .join("") +
       `</div>` +
       packageHtml;
+  }
+
+  function renderCharts(rows) {
+    const summary = aggregate(rows);
+    const grid = document.getElementById("charts-grid");
+    const card = (id) => `<div class="chart-card" id="chart-${id}"></div>`;
+
+    grid.innerHTML = ["population", "trend", "imports", "packages", "symbols", "depth"]
+      .map(card)
+      .join("");
+
+    const usage = summary.usage;
+
+    Viz.charts.bars(document.getElementById("chart-population"), {
+      title: "Population",
+      subtitle: "repositories in the loaded records (latest per repo)",
+      rows: [
+        { label: "analysed", value: usage.analyzedRepos },
+        { label: "effect adopters", value: usage.adopters },
+        { label: "with code usage", value: usage.withCodeUsage },
+      ].filter((row) => row.value > 0),
+    });
+
+    Viz.charts.trend(document.getElementById("chart-trend"), {
+      title: "Adoption over runs",
+      subtitle: "ratios recorded per run in run-summary.jsonl",
+      series: [
+        {
+          label: "adopters / analysed",
+          points: summary.runs.map((run) => ({ x: run.at, y: run.adopterRatio })),
+        },
+        {
+          label: "code usage / adopters",
+          points: summary.runs.map((run) => ({ x: run.at, y: run.codeUsageRatio })),
+        },
+      ],
+    });
+
+    Viz.charts.histogram(document.getElementById("chart-imports"), {
+      title: "Effect imports per file",
+      subtitle: "distribution across effect-using files",
+      bins: IMPORT_BINS.map((bin, index) => ({
+        label: bin.label,
+        count: summary.importBins[index],
+      })),
+    });
+
+    Viz.charts.bars(document.getElementById("chart-packages"), {
+      title: "Effect packages",
+      subtitle: "number of analysed repositories using each package",
+      rows: Object.entries(summary.packages)
+        .map(([label, value]) => ({ label, value }))
+        .sort((a, b) => b.value - a.value || a.label.localeCompare(b.label))
+        .slice(0, 10),
+    });
+
+    Viz.charts.bars(document.getElementById("chart-symbols"), {
+      title: "Most used Effect symbols",
+      subtitle: "AST-counted usages across analysed repositories",
+      rows: [...summary.symbols.entries()]
+        .map(([label, value]) => ({ label, value }))
+        .sort((a, b) => b.value - a.value || a.label.localeCompare(b.label))
+        .slice(0, 10),
+    });
+
+    Viz.charts.bars(document.getElementById("chart-depth"), {
+      title: "Adoption depth per repository",
+      subtitle: "share of TypeScript files importing Effect",
+      format: (value) => `${value.toFixed(1)}%`,
+      rows: summary.depth.sort((a, b) => b.value - a.value).slice(0, 10),
+    });
   }
 
   function renderSignalFilters() {
@@ -340,6 +544,8 @@
       `</ul>`;
   }
 
+  const DETAIL_JSON_LIMIT = 200000;
+
   function renderDetail(file, line) {
     const row = state.rows.find((r) => r.file === file && r.line === line);
     const panel = document.getElementById("detail");
@@ -350,10 +556,15 @@
     }
     const definition = Viz.recordTypes.get(row.type);
     const signals = row.record.signals || [];
+    const raw = JSON.stringify(row.record, null, 2);
+    const truncated = raw.length > DETAIL_JSON_LIMIT;
     body.innerHTML =
       `<p><code>${escapeHtml(file)}:${line}</code> · ${escapeHtml(definition ? definition.label : row.type)}</p>` +
       signals.map((signal) => Viz.renderSignal(signal)).join("") +
-      `<pre>${escapeHtml(JSON.stringify(row.record, null, 2))}</pre>`;
+      (truncated
+        ? `<p class="detail-note">Raw record too large to show in full (${Math.round(raw.length / 1024)} KB) — showing the first ${Math.round(DETAIL_JSON_LIMIT / 1024)} KB. The complete record is in the state file itself.</p>`
+        : "") +
+      `<pre>${escapeHtml(truncated ? raw.slice(0, DETAIL_JSON_LIMIT) : raw)}</pre>`;
     panel.hidden = false;
   }
 

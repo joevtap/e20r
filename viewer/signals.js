@@ -64,6 +64,14 @@
       ? ""
       : `<p><strong>${escapeHtml(title)}</strong> ${escapeHtml(items.join(", "))}</p>`;
 
+  /** Same as renderList but one line per item: long enumerations read better. */
+  const renderStack = (title, items) =>
+    items.length === 0
+      ? ""
+      : `<p><strong>${escapeHtml(title)}</strong></p><ul class="stack">` +
+        items.map((item) => `<li>${escapeHtml(item)}</li>`).join("") +
+        `</ul>`;
+
   // ---------------------------------------------------------------------
   // Signals currently emitted by the selection probes
   // (src/domain/clone-state.ts, src/analysis/probes/).
@@ -78,7 +86,7 @@
     },
     render: (signal) =>
       renderList("versions", signal.versions || []) +
-      renderList(
+      renderStack(
         "occurrences",
         (signal.occurrences || []).map((occ) => `${occ.file} · ${occ.field} · ${occ.version}`),
       ),
@@ -115,7 +123,10 @@
     const limit = 25;
     const shown = rows.slice(0, limit);
     const rest = rows.length - shown.length;
-    return renderList(title, [...shown.map(describe), ...(rest > 0 ? [`… and ${rest} more`] : [])]);
+    return renderStack(title, [
+      ...shown.map(describe),
+      ...(rest > 0 ? [`… and ${rest} more`] : []),
+    ]);
   };
 
   const describeImports = (file) => {

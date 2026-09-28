@@ -7,31 +7,97 @@
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <header>
-      <h1>e20r state viewer</h1>
-      <p class="subtitle">
-        Local-only viewer for <code>clone-state.jsonl</code>, <code>effect-repos.jsonl</code>,
-        <code>analysis-state.jsonl</code>, <code>run-summary.jsonl</code> and
-        <code>repos.jsonl</code>. Files are read in your browser and never uploaded anywhere.
-      </p>
+    <header class="hero">
+      <div>
+        <h1>e20r state viewer</h1>
+        <p class="subtitle">
+          Explore what the <code>e20r</code> pipeline learned about Effect adoption in TypeScript
+          repositories. Everything runs locally in your browser — files are never uploaded.
+        </p>
+      </div>
 
       <div id="drop-zone">
+        <label class="file-label" for="file-input">Choose files…</label>
         <input id="file-input" type="file" multiple accept=".jsonl,.json,.txt,.ndjson" />
-        <p>Drop <code>.jsonl</code> files here, or use the picker above.</p>
+        <p class="drop-hint">
+          Drop the pipeline's <code>.jsonl</code> files here, or use the picker. Load any mix, in
+          any order — the page derives everything else.
+        </p>
       </div>
 
       <div id="file-summary" class="toolbar"></div>
       <button id="clear-btn" type="button">Clear loaded data</button>
     </header>
 
-    <section id="stats" class="panel"></section>
+    <section id="guide" class="panel">
+      <h2>What each file reveals</h2>
+      <p class="guide-intro">
+        The pipeline writes one JSONL state file per stage. Each answers different questions — load
+        the ones you care about, or all of them together:
+      </p>
+      <div class="guide-grid">
+        <article class="guide-card">
+          <h3><code>repos.jsonl</code> <span class="stage">the crawl</span></h3>
+          <p>Every repository the GitHub crawl saw: stars, forks, activity, language.</p>
+          <p class="answers"><b>Answers:</b> what is the population we looked at?</p>
+        </article>
+        <article class="guide-card">
+          <h3><code>clone-state.jsonl</code> <span class="stage">the selection</span></h3>
+          <p>
+            Per repository: clone outcome, manifest signals (Effect versions, package managers) and
+            the adopter decision.
+          </p>
+          <p class="answers">
+            <b>Answers:</b> which repos use Effect at all, and how is it declared?
+          </p>
+        </article>
+        <article class="guide-card">
+          <h3><code>effect-repos.jsonl</code> <span class="stage">the hand-off</span></h3>
+          <p>
+            Adopters handed to deep analysis, each pinned to the exact commit that was analyzed.
+          </p>
+          <p class="answers"><b>Answers:</b> which repositories got the deep dive?</p>
+        </article>
+        <article class="guide-card">
+          <h3><code>analysis-state.jsonl</code> <span class="stage">the usage</span></h3>
+          <p>
+            Per adopter: TypeScript file inventory, Effect imports per file, packages used, and AST
+            symbol usage (calls, types, property accesses).
+          </p>
+          <p class="answers"><b>Answers:</b> how deeply is Effect actually used in the code?</p>
+        </article>
+        <article class="guide-card">
+          <h3><code>run-summary.jsonl</code> <span class="stage">the population</span></h3>
+          <p>One snapshot per run: repos analysed, adopters, and the resulting ratios.</p>
+          <p class="answers">
+            <b>Answers:</b> out of the analysed repos, how many use Effect — and how does that
+            trend?
+          </p>
+        </article>
+      </div>
+      <p class="guide-foot">
+        Records are appended across runs; where it matters, this page counts each repository once
+        (latest record wins), like the pipeline itself. Unknown record shapes and signal tags still
+        show up as raw JSON — newer pipelines never break this page.
+      </p>
+    </section>
+
+    <section id="stats" class="panel">
+      <h2>Summary</h2>
+    </section>
+
+    <section id="charts" class="panel">
+      <h2>Insights</h2>
+      <p class="guide-intro">Derived from the loaded records; every chart respects the filters.</p>
+      <div id="charts-grid" class="chart-grid"></div>
+    </section>
 
     <section id="filters" class="panel">
       <h2>Filters</h2>
       <div class="filter-row">
         <label>
           Search
-          <input id="search-input" type="search" placeholder="name, commit, error, signal…" />
+          <input id="search-input" type="search" placeholder="name, commit, error, signal, file…" />
         </label>
         <label>
           Record type
@@ -73,6 +139,7 @@
          See README.md for the extension points. -->
     <script src="records.js" defer></script>
     <script src="signals.js" defer></script>
+    <script src="charts.js" defer></script>
     <script src="app.js" defer></script>
   </body>
 </html>

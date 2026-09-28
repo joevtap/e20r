@@ -47,6 +47,13 @@
   const signalOf = (record, tag) => (record.signals || []).find((signal) => signal._tag === tag);
   Viz.signalOf = signalOf;
 
+  /**
+   * Field of a record under either naming: the GitHub crawl file stores the
+   * wire shape (`stargazers_count`), other dumps may use camelCase.
+   */
+  const pick = (record, wire, camel) =>
+    record[wire] !== undefined && record[wire] !== null ? record[wire] : record[camel];
+
   /** Numeric value out of a signal field chain, "" when absent. */
   const signalNumber = (record, tag, pick) => {
     const signal = signalOf(record, tag);
@@ -287,20 +294,21 @@
   Viz.registerRecordType("github-repo", {
     label: "crawled repository",
     test: (record) =>
-      typeof record.stargazersCount === "number" && typeof record.fullName === "string",
+      typeof pick(record, "stargazers_count", "stargazersCount") === "number" &&
+      typeof pick(record, "full_name", "fullName") === "string",
     columns: [
       { key: "id", label: "id", get: (r) => asText(r.id), sort: (r) => Number(r.id) },
       {
         key: "fullName",
         label: "repository",
-        get: (r) => asText(r.fullName),
-        sort: (r) => asText(r.fullName),
+        get: (r) => asText(pick(r, "full_name", "fullName")),
+        sort: (r) => asText(pick(r, "full_name", "fullName")),
       },
       {
         key: "stargazersCount",
         label: "stars",
-        get: (r) => asText(r.stargazersCount),
-        sort: (r) => Number(r.stargazersCount),
+        get: (r) => asText(pick(r, "stargazers_count", "stargazersCount")),
+        sort: (r) => Number(pick(r, "stargazers_count", "stargazersCount")),
       },
       {
         key: "language",
@@ -311,8 +319,8 @@
       {
         key: "pushedAt",
         label: "pushed",
-        get: (r) => isoDate(r.pushedAt),
-        sort: (r) => asText(r.pushedAt),
+        get: (r) => isoDate(pick(r, "pushed_at", "pushedAt")),
+        sort: (r) => asText(pick(r, "pushed_at", "pushedAt")),
       },
     ],
   });
