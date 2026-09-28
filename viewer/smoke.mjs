@@ -95,20 +95,33 @@ check(
 );
 check(
   "summarizes ts-file-count",
-  Viz.summarizeSignal({ _tag: "ts-file-count", total: 12, byRole: { source: 9, test: 3 } }).includes(
-    "12 ts files (3 test)",
-  ),
+  Viz.summarizeSignal({
+    _tag: "ts-file-count",
+    total: 12,
+    byRole: { source: 9, test: 3 },
+  }).includes("12 ts files (3 test)"),
 );
 check(
   "summarizes effect-imports-per-file",
-  Viz.summarizeSignal({ _tag: "effect-imports-per-file", importCount: 3, files: [{}, {}] }).includes(
-    "3 imports in 2 files",
-  ),
+  Viz.summarizeSignal({
+    _tag: "effect-imports-per-file",
+    importCount: 3,
+    files: [{}, {}],
+  }).includes("3 imports in 2 files"),
 );
 check(
   "summarizes effect-packages-used",
   Viz.summarizeSignal({ _tag: "effect-packages-used", packages: ["effect", "@effect/cli"] }) ===
     "effect, @effect/cli",
+);
+check(
+  "summarizes effect-symbols-per-file",
+  Viz.summarizeSignal({
+    _tag: "effect-symbols-per-file",
+    file: "src/main.ts",
+    total: 3,
+    symbols: [{}, {}],
+  }).includes("3 usages, 2 symbols"),
 );
 check("renderSignal escapes HTML", !Viz.renderSignal({ _tag: "x<script>" }).includes("<script>"));
 
@@ -116,8 +129,8 @@ check("renderSignal escapes HTML", !Viz.renderSignal({ _tag: "x<script>" }).incl
 Viz.loadText(readFileSync(new URL("sample.jsonl", import.meta.url), "utf8"), "sample.jsonl");
 
 check(
-  "13 lines -> 12 records + 1 problem",
-  Viz.state.rows.length === 12 && Viz.state.problems.length === 1,
+  "14 lines -> 13 records + 1 problem",
+  Viz.state.rows.length === 13 && Viz.state.problems.length === 1,
   {
     rows: Viz.state.rows.length,
     problems: Viz.state.problems.length,
@@ -219,7 +232,21 @@ fire("tables", "click", {
   },
 });
 check("detail renders usage signals", html("detail-body").includes("effect imports per file"));
-check("detail lists per-file rows", html("detail-body").includes("src/Effect.ts [test]") || html("detail-body").includes("src/App.test.tsx [test]"));
+check(
+  "detail lists per-file rows",
+  html("detail-body").includes("src/Effect.ts [test]") ||
+    html("detail-body").includes("src/App.test.tsx [test]"),
+);
+
+// --- symbol detail (line 14 of sample.jsonl is acme/symbols, aliased import) ---
+fire("tables", "click", {
+  target: {
+    closest: (sel) =>
+      sel === "th.sortable" ? null : { dataset: { line: "14", file: "sample.jsonl" } },
+  },
+});
+check("detail renders symbol signal", html("detail-body").includes("effect symbols per file"));
+check("detail renders normalized symbols", html("detail-body").includes("Effect.gen (call) × 2"));
 
 // --- clear ---
 fire("clear-btn", "click");

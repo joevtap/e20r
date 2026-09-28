@@ -110,15 +110,12 @@
     return `source ${role.source ?? 0}, test ${role.test ?? 0}`;
   };
 
-  /** Capped list of per-file rows: the detail panel must stay usable. */
-  const renderFileRows = (title, rows, describe) => {
+  /** Capped list of rows: the detail panel must stay usable. */
+  const renderRows = (title, rows, describe) => {
     const limit = 25;
     const shown = rows.slice(0, limit);
     const rest = rows.length - shown.length;
-    return renderList(title, [
-      ...shown.map(describe),
-      ...(rest > 0 ? [`… and ${rest} more`] : []),
-    ]);
+    return renderList(title, [...shown.map(describe), ...(rest > 0 ? [`… and ${rest} more`] : [])]);
   };
 
   const describeImports = (file) => {
@@ -138,7 +135,9 @@
       renderList("roles", [roleText(signal)]) +
       renderList(
         "extensions",
-        Object.entries(signal.byExtension || {}).map(([extension, count]) => `${extension}: ${count}`),
+        Object.entries(signal.byExtension || {}).map(
+          ([extension, count]) => `${extension}: ${count}`,
+        ),
       ) +
       renderList("declaration files", [String(signal.declarationFiles ?? 0)]),
   });
@@ -155,7 +154,7 @@
     label: "effect imports per file",
     summarize: (signal) =>
       `${signal.importCount ?? 0} imports in ${(signal.files || []).length} files`,
-    render: (signal) => renderFileRows("files", signal.files || [], describeImports),
+    render: (signal) => renderRows("files", signal.files || [], describeImports),
   });
 
   Viz.registerSignal("effect-packages-used", {
@@ -163,8 +162,21 @@
     summarize: (signal) => (signal.packages || []).join(", ") || "no packages",
     render: (signal) =>
       renderList("packages", signal.packages || []) +
-      renderFileRows("per file", signal.files || [], (file) =>
-        `${file.file} [${file.role ?? "?"}]: ${(file.packages || []).join(", ")}`,
+      renderRows(
+        "per file",
+        signal.files || [],
+        (file) => `${file.file} [${file.role ?? "?"}]: ${(file.packages || []).join(", ")}`,
+      ),
+  });
+
+  Viz.registerSignal("effect-symbols-per-file", {
+    label: "effect symbols per file",
+    summarize: (signal) => `${signal.total ?? 0} usages, ${(signal.symbols || []).length} symbols`,
+    render: (signal) =>
+      renderRows(
+        `symbols in ${signal.file} [${signal.role ?? "?"}]`,
+        signal.symbols || [],
+        (usage) => `${usage.symbol} (${usage.kind}) × ${usage.count}`,
       ),
   });
 })();
