@@ -51,7 +51,7 @@
    * Field of a record under either naming: the GitHub crawl file stores the
    * wire shape (`stargazers_count`), other dumps may use camelCase.
    */
-  const pick = (record, wire, camel) =>
+  const field = (record, wire, camel) =>
     record[wire] !== undefined && record[wire] !== null ? record[wire] : record[camel];
 
   /** Numeric value out of a signal field chain, "" when absent. */
@@ -294,21 +294,21 @@
   Viz.registerRecordType("github-repo", {
     label: "crawled repository",
     test: (record) =>
-      typeof pick(record, "stargazers_count", "stargazersCount") === "number" &&
-      typeof pick(record, "full_name", "fullName") === "string",
+      typeof field(record, "stargazers_count", "stargazersCount") === "number" &&
+      typeof field(record, "full_name", "fullName") === "string",
     columns: [
       { key: "id", label: "id", get: (r) => asText(r.id), sort: (r) => Number(r.id) },
       {
         key: "fullName",
         label: "repository",
-        get: (r) => asText(pick(r, "full_name", "fullName")),
-        sort: (r) => asText(pick(r, "full_name", "fullName")),
+        get: (r) => asText(field(r, "full_name", "fullName")),
+        sort: (r) => asText(field(r, "full_name", "fullName")),
       },
       {
         key: "stargazersCount",
         label: "stars",
-        get: (r) => asText(pick(r, "stargazers_count", "stargazersCount")),
-        sort: (r) => Number(pick(r, "stargazers_count", "stargazersCount")),
+        get: (r) => asText(field(r, "stargazers_count", "stargazersCount")),
+        sort: (r) => Number(field(r, "stargazers_count", "stargazersCount")),
       },
       {
         key: "language",
@@ -319,8 +319,8 @@
       {
         key: "pushedAt",
         label: "pushed",
-        get: (r) => isoDate(pick(r, "pushed_at", "pushedAt")),
-        sort: (r) => asText(pick(r, "pushed_at", "pushedAt")),
+        get: (r) => isoDate(field(r, "pushed_at", "pushedAt")),
+        sort: (r) => asText(field(r, "pushed_at", "pushedAt")),
       },
     ],
   });

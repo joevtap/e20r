@@ -54,7 +54,14 @@ const EffectImportSchema = Schema.Struct({
   module: Schema.String,
   /** Package the specifier belongs to: "effect" or "@effect/<name>". */
   package: Schema.String,
-  kind: Schema.Literals(["import", "require", "export-from", "dynamic-import"]),
+  kind: Schema.Literals([
+    "import",
+    "require",
+    "export-from",
+    "dynamic-import",
+    // `import("effect").Layer.MemoMap` — a type-only module import.
+    "type-import",
+  ]),
   /** 1-based line of the statement, tying the row to later AST-based signals. */
   line: Schema.Finite,
   names: Schema.Array(ImportNameSchema),
