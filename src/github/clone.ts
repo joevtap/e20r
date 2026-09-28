@@ -91,7 +91,7 @@ const cloneFailureMessage = (output: GitOutput): string =>
   `git clone exited with code ${output.exitCode}${output.stderr === "" ? "" : `: ${output.stderr}`}`;
 
 const describeCloneError = (error: string | Cause.TimeoutError): string =>
-  Cause.isTimeoutError(error) ? "git clone timed out after 2 minutes" : error;
+  Cause.isTimeoutError(error) ? "git clone timed out after 10 minutes" : error;
 
 const describeRevParseError = (error: string | Cause.TimeoutError): string =>
   Cause.isTimeoutError(error) ? "git rev-parse HEAD timed out after 30 seconds" : error;
@@ -104,7 +104,7 @@ const cloneAttempt = (
     // A fresh scope per attempt so the killed process of a failed attempt
     // does not linger into the retry.
     Effect.scoped,
-    Effect.timeout("2 minutes"),
+    Effect.timeout("10 minutes"),
     Effect.mapError(describeCloneError),
   );
 
@@ -200,19 +200,26 @@ export interface CloneOutcome {
 
 /**
  * Clones a repository shallowly (its default branch, depth 1, no tags) into
- * `cloneDir`, which must not exist beforehand, and fails with a
- * human-readable message on non-zero exit, spawn errors, or the 2-minute
+ * `targetDir`, which must not exist beforehand, and fails with a
+ * human-readable message on non-zero exit, spawn errors, or the 10-minute
  * timeout (the child process is killed by the spawner's scope finalizer).
+ * The timeout is generous because large monorepos can legitimately take
+ * minutes to clone; it only exists so a hung git process cannot stall the
+ * pipeline forever.
  *
- * Every attempt runs in a fresh scope and is retried with backoff.
+ * Every attempt runs in a fresh scope, cleans up the remains of the previous
+ * attempt (a killed clone leaves a partial directory behind, and `git clone`
+ * refuses non-empty destinations), and is retried with backoff.
  */
 const cloneRepo = (
   repo: GithubRepo,
   targetDir: string,
-): Effect.Effect<void, string, ChildProcessSpawner.ChildProcessSpawner> =>
-  cloneAttempt(repo, targetDir).pipe(
-    Effect.retry({ times: 2, schedule: Schedule.exponential("1 second") }),
-  );
+): Effect.Effect<void, string, ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    yield* Effect.ignore(fs.remove(targetDir, { recursive: true, force: true }));
+    yield* cloneAttempt(repo, targetDir);
+  }).pipe(Effect.retry({ times: 2, schedule: Schedule.exponential("1 second") }));
 
 /**
  * Clones the repository shallowly into `cloneDir` unless a usable clone is
