@@ -19,6 +19,7 @@
   --good: #0ca30c;
   --focus: #2a78d6;
   --shadow: 0 12px 40px rgba(11, 11, 11, 0.16);
+  --scrim: rgba(11, 11, 11, 0.32);
   --radius: 10px;
   --font: system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -41,6 +42,7 @@
     --track: #2a2a28;
     --focus: #3987e5;
     --shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+    --scrim: rgba(0, 0, 0, 0.6);
   }
 }
 
@@ -60,6 +62,7 @@
   --track: #2a2a28;
   --focus: #3987e5;
   --shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  --scrim: rgba(0, 0, 0, 0.6);
 }
 
 * {
@@ -68,6 +71,15 @@
 
 [hidden] {
   display: none !important;
+}
+
+html {
+  /* The drawer locks page scrolling; keep the layout from shifting when
+     the page scrollbar goes away. */
+  scrollbar-gutter: stable;
+}
+html.drawer-open {
+  overflow: hidden;
 }
 
 body {
@@ -199,6 +211,30 @@ select {
 .db-status .dot.fresh {
   background: var(--good);
 }
+.db-status .refresh {
+  margin-left: 10px;
+  padding: 2px 10px;
+  font-size: 12px;
+  border-color: color-mix(in srgb, var(--series-1) 50%, transparent);
+  background: var(--wash);
+  color: var(--ink);
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 4px 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--wash);
+  font-size: 13px;
+  align-self: flex-end;
+  margin-bottom: 2px;
+}
+.chip button {
+  padding: 0 6px;
+  border: none;
+}
 
 /* ---- filter row: one row above everything it scopes ---- */
 
@@ -265,10 +301,24 @@ main > div > .section-head:first-child {
 
 /* ---- KPI tiles ---- */
 
+/* Fixed column steps (6 / 3 / 2) so the tiles never leave an orphan row. */
 .kpis {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 10px;
+}
+@media (max-width: 1280px) {
+  .kpis {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media (max-width: 640px) {
+  .kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.drawer .kpis {
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
 }
 .kpi {
   background: var(--surface);
@@ -322,8 +372,19 @@ main > div > .section-head:first-child {
 .card.wide {
   grid-column: 1 / -1;
 }
+/* Four cards: 4 / 2 / 1 columns, never 3 + 1. */
 .grid.quad {
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+@media (max-width: 1280px) {
+  .grid.quad {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 720px) {
+  .grid.quad {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* One grid for all rows (subgrid), so every track starts and ends at the same x. */
@@ -596,7 +657,7 @@ td .cell-bar i {
 .scrim {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.28);
+  background: var(--scrim);
   z-index: 30;
 }
 .drawer {
@@ -628,7 +689,10 @@ td .cell-bar i {
   white-space: nowrap;
 }
 .drawer-body {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 4px 20px 40px;
 }
 .drawer-body .section-head {
@@ -660,6 +724,32 @@ td .cell-bar i {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+.local-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 14px;
+  margin-bottom: 8px;
+}
+a.button {
+  display: inline-block;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 8px;
+  padding: 6px 12px;
+  color: var(--ink);
+}
+a.button:hover {
+  background: var(--wash);
+  text-decoration: none;
+}
+td.symbols-cell {
+  min-width: 320px;
+  font-size: 12px;
+}
+.symbol-list {
+  columns: 2 220px;
 }
 .file-detail td {
   background: var(--surface-2);

@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 
-export const GithubRepoLicenseSchema = Schema.Struct({
+const GithubRepoLicenseSchema = Schema.Struct({
   key: Schema.String,
   name: Schema.String,
   spdxId: Schema.NullOr(Schema.String),
@@ -10,8 +10,6 @@ export const GithubRepoLicenseSchema = Schema.Struct({
     spdxId: "spdx_id",
   }),
 );
-
-export type GithubRepoLicense = Schema.Schema.Type<typeof GithubRepoLicenseSchema>;
 
 export const GithubRepoSchema = Schema.Struct({
   id: Schema.Finite,
@@ -104,5 +102,3 @@ export const GithubRepoSearchResponseSchema = Schema.Struct({
     incompleteResults: "incomplete_results",
   }),
 );
-
-export type GithubRepoSearchResponse = Schema.Schema.Type<typeof GithubRepoSearchResponseSchema>;

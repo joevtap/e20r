@@ -12,6 +12,9 @@ import {
 import type * as SqlClient from "effect/unstable/sql/SqlClient";
 import {
   browsableTables,
+  fileSorts,
+  fileSymbolsCsv,
+  fileTable,
   meta,
   overview,
   param,
@@ -28,6 +31,7 @@ import {
   symbolTable,
   tablePage,
   type BrowsableTable,
+  type FileSearch,
   type SymbolKindFilter,
 } from "./queries.ts";
 
@@ -66,6 +70,29 @@ const endpoint = <A, E>(
 
 const repoId = (params: HttpServerRequest.ParsedSearchParams["Service"]): number =>
   Number(param(params, "id") ?? param(params, "repo") ?? Number.NaN);
+
+const fileSearch = (params: HttpServerRequest.ParsedSearchParams["Service"]): FileSearch => {
+  const repo = Number(param(params, "repo"));
+  return {
+    path: (param(params, "path") ?? "").trim().slice(0, 300),
+    uses: (param(params, "uses") ?? "").trim().slice(0, 200),
+    ...(Number.isInteger(repo) && repo > 0 ? { repo } : {}),
+  };
+};
+
+/** The Files view's selection as a CSV download (one line per file × symbol). */
+const filesCsv: Handler = Effect.gen(function* () {
+  const params = yield* HttpServerRequest.ParsedSearchParams;
+  const csv = yield* fileSymbolsCsv(parseFilters(params), fileSearch(params));
+  return HttpServerResponse.text(csv, {
+    contentType: "text/csv; charset=utf-8",
+    headers: { "content-disposition": 'attachment; filename="e20r-file-symbols.csv"' },
+  });
+}).pipe(
+  Effect.catch((error) =>
+    Effect.succeed(HttpServerResponse.text(`error: ${String(error)}\n`, { status: 500 })),
+  ),
+);
 
 const ApiRoutes = HttpRouter.addAll([
   HttpRouter.route(
@@ -106,6 +133,19 @@ const ApiRoutes = HttpRouter.addAll([
         : Effect.succeed(undefined);
     }),
   ),
+  HttpRouter.route(
+    "GET",
+    "/api/files",
+    endpoint((params) =>
+      fileTable(
+        parseFilters(params),
+        fileSearch(params),
+        parseSort(fileSorts, params, "usages"),
+        parsePage(params),
+      ),
+    ),
+  ),
+  HttpRouter.route("GET", "/api/files.csv", filesCsv),
   HttpRouter.route(
     "GET",
     "/api/symbols",

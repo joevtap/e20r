@@ -246,7 +246,18 @@ const run = (statements: ReadonlyArray<string>) =>
     for (const statement of statements) yield* sql.unsafe(statement);
   });
 
+/**
+ * Per-file lookups (a file's symbols and imports, the viewer's Files view)
+ * go by `(repo_id, file)`; the `repo_id` indexes alone make each lookup a
+ * scan of the whole repository's rows.
+ */
+const fileIndexes = [
+  `CREATE INDEX file_symbols_file ON file_symbols (repo_id, file)`,
+  `CREATE INDEX file_imports_file ON file_imports (repo_id, file)`,
+];
+
 export const migrations = {
   "0001_initial": run(initial),
   "0002_generated_role": run(generatedRole),
+  "0003_file_indexes": run(fileIndexes),
 };

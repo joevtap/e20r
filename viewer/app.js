@@ -9,7 +9,7 @@
 (function () {
   "use strict";
 
-  const { h, charts } = window.Viz;
+  const { h, fill, charts } = window.Viz;
 
   // ------------------------------------------------------------------
   // Formatting
@@ -76,7 +76,7 @@
   // ------------------------------------------------------------------
 
   const defaults = { q: "", status: "processed", minStars: "", role: "all", kind: "all" };
-  const tabs = ["overview", "repos", "symbols", "data"];
+  const tabs = ["overview", "repos", "symbols", "files", "data"];
 
   const state = {
     tab: "overview",
@@ -87,6 +87,12 @@
     search: "",
     reposSort: { key: "stars", dir: "desc" },
     symbolsSort: { key: "repos", dir: "desc" },
+    filesSort: { key: "usages", dir: "desc" },
+    path: "",
+    uses: "",
+    /** The Files tab narrowed to one repository (from its drawer). */
+    fileRepo: "",
+    fileRepoName: "",
     table: "repo_state",
     lastUpdate: null,
     meta: null,
@@ -101,11 +107,20 @@
     state.symbol = params.get("symbol");
     state.symbolKind = params.get("symbolKind") || "all";
     state.search = params.get("search") || "";
+    state.path = params.get("path") || "";
+    state.uses = params.get("uses") || "";
+    state.fileRepo = params.get("fileRepo") || "";
+    state.fileRepoName = params.get("fileRepoName") || "";
     state.table = params.get("table") || state.table;
     const sort = params.get("sort");
     if (sort) {
       const [key, dir] = sort.split(":");
-      const target = state.tab === "symbols" ? state.symbolsSort : state.reposSort;
+      const target =
+        state.tab === "symbols"
+          ? state.symbolsSort
+          : state.tab === "files"
+            ? state.filesSort
+            : state.reposSort;
       target.key = key;
       target.dir = dir === "asc" ? "asc" : "desc";
     }
@@ -123,9 +138,21 @@
       if (next.symbolKind !== "all") params.set("symbolKind", next.symbolKind);
     }
     if (next.tab === "symbols" && next.search) params.set("search", next.search);
+    if (next.tab === "files" && next.path) params.set("path", next.path);
+    if (next.tab === "files" && next.uses) params.set("uses", next.uses);
+    if (next.tab === "files" && next.fileRepo) {
+      params.set("fileRepo", next.fileRepo);
+      params.set("fileRepoName", next.fileRepoName);
+    }
     if (next.tab === "data") params.set("table", next.table);
     const sort =
-      next.tab === "repos" ? next.reposSort : next.tab === "symbols" ? next.symbolsSort : null;
+      next.tab === "repos"
+        ? next.reposSort
+        : next.tab === "symbols"
+          ? next.symbolsSort
+          : next.tab === "files"
+            ? next.filesSort
+            : null;
     if (sort) params.set("sort", `${sort.key}:${sort.dir}`);
     const query = params.toString();
     return `#${next.tab}${query ? `?${query}` : ""}`;
@@ -168,16 +195,16 @@
   /** Renders a view, keeping the previous frame (dimmed) until the new one is ready. */
   const renderView = async () => {
     const token = ++renderToken;
+    viewStale = false;
     view.classList.add("loading");
+    if (view.childElementCount === 0) fill(view, h("p", { class: "muted" }, "Loading…"));
     try {
-      const content = await { overview, repos, symbols, data }[state.tab]();
+      const content = await { overview, repos, symbols, files: filesTab, data }[state.tab]();
       if (token !== renderToken) return;
-      view.replaceChildren(content);
+      fill(view, content);
     } catch (error) {
       if (token !== renderToken) return;
-      view.replaceChildren(
-        h("p", { class: "error" }, `Could not load this view: ${error.message}`),
-      );
+      fill(view, h("p", { class: "error" }, `Could not load this view: ${error.message}`));
     } finally {
       if (token === renderToken) view.classList.remove("loading");
     }
@@ -195,7 +222,7 @@
     h(
       "div",
       { class: "kpi" },
-      h("div", { class: "value" }, value, unit ? h("small", null, unit) : null),
+      h("div", { class: "value" }, value, unit ? [" ", h("small", null, unit)] : null),
       h("div", { class: "label" }, label),
       sub ? h("div", { class: "sub" }, sub) : null,
     );
@@ -489,7 +516,7 @@
    * A table over server-sorted rows: `columns: [{ key, label, num?, sort?,
    * cell(row) }]`; `sort` names the server sort key.
    */
-  const table = ({ columns, rows, sort, onSort, onRow, rowLabel }) =>
+  const table = ({ columns, rows, sort, onSort, onRow, rowLabel, expand }) =>
     h(
       "table",
       null,
@@ -523,8 +550,8 @@
       h(
         "tbody",
         null,
-        rows.map((row) =>
-          h(
+        rows.map((row) => {
+          const tr = h(
             "tr",
             onRow
               ? {
@@ -538,8 +565,9 @@
             columns.map((column) =>
               h("td", { class: column.num ? "num" : column.className }, column.cell(row)),
             ),
-          ),
-        ),
+          );
+          return expand ? expandable(tr, columns.length, () => expand(row)) : tr;
+        }),
       ),
     );
 
@@ -563,8 +591,9 @@
     const wrap = h("div", { class: "table-wrap" });
     const foot = h("div", { class: "table-foot" });
     const draw = () => {
-      wrap.replaceChildren(render(rows), foot);
-      foot.replaceChildren(
+      fill(wrap, render(rows), foot);
+      fill(
+        foot,
         h("span", null, `Showing ${int(rows.length)} of ${int(first.total)}`),
         rows.length < first.total
           ? h(
@@ -708,8 +737,159 @@
       ),
       h(
         "div",
-        { class: "filters", style: "padding:0 0 10px;border:none;background:none" },
+        { class: "local-filters" },
         h("label", { class: "field grow" }, h("span", null, "Symbol"), search),
+      ),
+      paged.element,
+    );
+  }
+
+  // ---- files ----
+
+  /** A symbol as listed inline: calls as `fn()`, type positions as `: T`. */
+  const symbolLabel = (symbol, kind) =>
+    kind === "call" ? `${symbol}()` : kind === "type-reference" ? `: ${symbol}` : symbol;
+
+  async function filesTab() {
+    const pageSize = 100;
+    const sort = state.filesSort;
+    const query = () => ({
+      ...filterParams(),
+      path: state.path,
+      uses: state.uses,
+      ...(state.fileRepo ? { repo: state.fileRepo } : {}),
+    });
+    const columns = [
+      { label: "Repository", sort: "file", cell: (r) => r.fullName },
+      {
+        label: "File",
+        className: "wrap",
+        cell: (r) => [
+          h("span", { class: "mono" }, r.file),
+          " ",
+          h(
+            "a",
+            {
+              href: fileUrl(r, r.file),
+              target: "_blank",
+              rel: "noopener",
+              title: "Open on GitHub",
+            },
+            "↗",
+          ),
+        ],
+      },
+      { label: "Role", cell: (r) => roleName[r.role] || r.role },
+      { label: "LOC", num: true, sort: "loc", cell: (r) => int(r.loc) },
+      { label: "Imports", num: true, sort: "imports", cell: (r) => int(r.importCount) },
+      { label: "Symbols", num: true, sort: "symbols", cell: (r) => int(r.distinctSymbols) },
+      { label: "Usages", num: true, sort: "usages", cell: (r) => int(r.usages) },
+      {
+        label: "Most used symbols",
+        className: "wrap symbols-cell",
+        cell: (r) =>
+          r.topSymbols.length === 0
+            ? h("span", { class: "muted" }, "none")
+            : [
+                r.topSymbols.map(([symbol, kind, count], index) => [
+                  index > 0 ? h("span", { class: "muted" }, " · ") : null,
+                  h("span", { class: "mono" }, symbolLabel(symbol, kind)),
+                  h("span", { class: "muted" }, ` ×${count}`),
+                ]),
+                r.distinctSymbols > r.topSymbols.length
+                  ? h(
+                      "span",
+                      { class: "muted" },
+                      ` · +${int(r.distinctSymbols - r.topSymbols.length)} more`,
+                    )
+                  : null,
+              ],
+      },
+    ];
+
+    let paged;
+    try {
+      paged = await pagedTable({
+        pageSize,
+        load: (offset) =>
+          api("files", { ...query(), sort: sort.key, dir: sort.dir, limit: pageSize, offset }),
+        render: (rows) =>
+          table({
+            columns,
+            rows,
+            sort,
+            onSort: (key) => navigate({ filesSort: toggleSort(sort, key) }, true),
+            expand: (row) => fileDetail(row, row.file),
+          }),
+      });
+    } catch (error) {
+      if (error.message !== "not found") throw error;
+      return h(
+        "div",
+        null,
+        sectionHead("Files"),
+        h(
+          "p",
+          { class: "note" },
+          "This view needs a newer server: rebuild (pnpm build) and restart `e20r view`.",
+        ),
+      );
+    }
+
+    const field = (label, key, placeholder) =>
+      h(
+        "label",
+        { class: "field grow" },
+        h("span", null, label),
+        h("input", {
+          type: "search",
+          placeholder,
+          value: state[key],
+          "aria-label": label,
+          onInput: debounce((event) => navigate({ [key]: event.target.value.trim() }, true), 300),
+        }),
+      );
+    const csvHref = `/api/files.csv?${new URLSearchParams(query())}`;
+
+    return h(
+      "div",
+      null,
+      sectionHead(
+        "Files",
+        `${int(paged.total)} Effect files in ${int(paged.extra.repos)} analyzed repo${paged.extra.repos === 1 ? "" : "s"} · ${roleLabel[state.filters.role]} · click a row for every symbol`,
+      ),
+      h(
+        "div",
+        { class: "local-filters" },
+        state.fileRepo
+          ? h(
+              "span",
+              { class: "chip" },
+              `Repository: ${state.fileRepoName || state.fileRepo}`,
+              h(
+                "button",
+                {
+                  type: "button",
+                  class: "ghost",
+                  "aria-label": "Show files of every repository",
+                  onClick: () => navigate({ fileRepo: "", fileRepoName: "" }),
+                },
+                "✕",
+              ),
+            )
+          : null,
+        field("File path", "path", "src/services, .test.ts…"),
+        field("Uses symbol", "uses", "Layer.effect, Schema.TaggedError…"),
+        h(
+          "a",
+          { class: "button", href: csvHref, download: "e20r-file-symbols.csv" },
+          "Download CSV",
+        ),
+      ),
+      h(
+        "p",
+        { class: "note", style: "margin:0 0 10px" },
+        "Calls show as fn(), type positions as : T. The CSV has one line per file × symbol for this selection.",
       ),
       paged.element,
     );
@@ -793,15 +973,21 @@
   const scrim = document.getElementById("scrim");
   let drawerKey = null;
   let lastFocus = null;
+  /** New data arrived while the drawer was open; it refreshes on request only. */
+  let drawerStale = false;
 
   const closeDrawer = () => navigate({ repo: null, symbol: null, symbolKind: "all" });
 
   const showDrawer = (title, body) => {
     if (drawer.hidden) lastFocus = document.activeElement;
     drawerTitle.textContent = title;
-    drawerBody.replaceChildren(body);
+    fill(drawerBody, body);
     drawer.hidden = false;
     scrim.hidden = false;
+    // Modal: the page behind stops scrolling, so the drawer's is the only
+    // scrollbar and the wheel always scrolls what is under the pointer.
+    document.documentElement.classList.add("drawer-open");
+    Viz.hideTip();
     document.getElementById("drawer-close").focus({ preventScroll: true });
   };
 
@@ -810,7 +996,13 @@
     drawer.hidden = true;
     scrim.hidden = true;
     drawerKey = null;
-    if (lastFocus && document.contains(lastFocus)) lastFocus.focus({ preventScroll: true });
+    drawerStale = false;
+    document.documentElement.classList.remove("drawer-open");
+    Viz.hideTip();
+    if (lastFocus && document.contains(lastFocus)) {
+      lastFocus.focus({ preventScroll: true, focusVisible: false });
+    }
+    updateStatus();
   };
 
   const renderDrawer = async (force = false) => {
@@ -822,6 +1014,7 @@
     if (key === null) return hideDrawer();
     if (key === drawerKey && !force) return;
     drawerKey = key;
+    drawerStale = false;
     if (drawer.hidden)
       showDrawer(state.repo ? "Loading…" : state.symbol, h("p", { class: "muted" }, "Loading…"));
     try {
@@ -879,7 +1072,7 @@
         null,
         h("a", { href: githubUrl(repo), target: "_blank", rel: "noopener" }, "GitHub ↗"),
       ),
-      h("span", { class: "muted" }, `updated ${ago(repo.updatedAt)}`),
+      h("span", { class: "muted", title: repo.updatedAt }, `processed ${ago(repo.updatedAt)}`),
     );
 
     const callouts = [
@@ -1097,16 +1290,45 @@
             })),
           });
 
-    const fileRows = detail.files.rows;
+    // The drawer shows the busiest files; the Files tab has all of them,
+    // searchable, with every symbol and a CSV export.
+    const drawerFiles = 50;
+    const fileRows = detail.files.rows.slice(0, drawerFiles);
+    const allFilesLink = h(
+      "a",
+      {
+        href: hashFor({
+          tab: "files",
+          repo: null,
+          fileRepo: String(repo.repoId),
+          fileRepoName: repo.fullName,
+          path: "",
+          uses: "",
+        }),
+        onClick: (event) => {
+          event.preventDefault();
+          navigate({
+            tab: "files",
+            repo: null,
+            fileRepo: String(repo.repoId),
+            fileRepoName: repo.fullName,
+            path: "",
+            uses: "",
+          });
+        },
+      },
+      `All ${int(detail.files.total)} files in the Files tab →`,
+    );
     const filesTable =
       fileRows.length === 0
         ? null
         : [
             sectionHead(
               "Effect files",
-              `${int(detail.files.total)} files${detail.files.total > fileRows.length ? `, top ${int(fileRows.length)} by symbol usages` : ""} · click to expand`,
+              `${detail.files.total > fileRows.length ? `top ${int(fileRows.length)} of ${int(detail.files.total)}` : `${int(detail.files.total)} files`} by symbol usages · click to expand`,
             ),
             h("div", { class: "table-wrap" }, effectFilesTable(repo, fileRows)),
+            h("p", { class: "note" }, allFilesLink),
           ];
 
     showDrawer(
@@ -1129,114 +1351,115 @@
     );
   }
 
-  /** The Effect files of a repository; a row expands into its imports and symbols. */
-  const effectFilesTable = (repo, rows) => {
-    const tbody = h("tbody");
-    const expanded = new Map();
-    for (const row of rows) {
-      const tr = h(
-        "tr",
-        { class: "clickable", tabindex: "0", "aria-expanded": "false" },
-        h("td", { class: "wrap mono" }, row.file),
-        h("td", null, roleName[row.role] || row.role),
-        h("td", { class: "num" }, int(row.loc)),
-        h("td", { class: "num" }, int(row.importCount)),
-        h("td", { class: "num" }, int(row.symbolTotal)),
-        h("td", null, row.parser === "oxc" ? "" : row.parser),
-      );
-      const toggle = async () => {
-        const open = expanded.get(row.file);
-        if (open) {
-          open.remove();
-          expanded.delete(row.file);
-          tr.setAttribute("aria-expanded", "false");
-          return;
-        }
-        const detailRow = h(
-          "tr",
-          { class: "file-detail" },
-          h("td", { colspan: "6" }, h("span", { class: "muted" }, "Loading…")),
-        );
-        tr.after(detailRow);
-        expanded.set(row.file, detailRow);
-        tr.setAttribute("aria-expanded", "true");
-        const file = await api("file", { repo: repo.repoId, file: row.file });
-        detailRow.firstChild.replaceChildren(
-          h(
-            "div",
-            { class: "inner" },
+  /**
+   * One file's imports (each linked to its line on GitHub at the analyzed
+   * commit) and its complete symbol list. `repo` needs `repoId`, `fullName`,
+   * `commitSha` and optionally `htmlUrl`.
+   */
+  const fileDetail = async (repo, path) => {
+    const file = await api("file", { repo: repo.repoId, file: path });
+    const nameList = (names) =>
+      names
+        .map((n) => (n.imported === n.local ? n.local : `${n.imported} as ${n.local}`))
+        .join(", ");
+    return h(
+      "div",
+      { class: "inner" },
+      h(
+        "div",
+        null,
+        h("b", null, `Imports (${file.imports.length})`),
+        h(
+          "ul",
+          null,
+          file.imports.map((entry) =>
             h(
-              "div",
-              null,
-              h("b", null, "Imports"),
-              h(
-                "ul",
-                null,
-                file.imports.map((entry) =>
-                  h(
-                    "li",
-                    null,
-                    h(
-                      "a",
-                      {
-                        href: fileUrl(repo, row.file, entry.line),
-                        target: "_blank",
-                        rel: "noopener",
-                      },
-                      `L${entry.line}`,
-                    ),
-                    " ",
-                    h("span", { class: "mono" }, entry.module),
-                    ` ${entry.kind}`,
-                    entry.names.length > 0
-                      ? h(
-                          "span",
-                          { class: "muted" },
-                          ` { ${entry.names.map((n) => (n.imported === n.local ? n.local : `${n.imported} as ${n.local}`)).join(", ")} }`,
-                        )
-                      : null,
-                  ),
-                ),
-              ),
-            ),
-            h(
-              "div",
-              null,
-              h("b", null, "Symbols"),
-              file.symbols.length === 0
-                ? h("p", { class: "muted" }, "none (text-scanned or import-only)")
-                : h(
-                    "ul",
-                    null,
-                    file.symbols
-                      .slice(0, 40)
-                      .map((symbol) =>
-                        h(
-                          "li",
-                          null,
-                          h("span", { class: "mono" }, symbol.symbol),
-                          h("span", { class: "muted" }, ` ${symbol.kind} × ${symbol.count}`),
-                        ),
-                      ),
-                  ),
-            ),
-            h(
-              "div",
+              "li",
               null,
               h(
                 "a",
-                { href: fileUrl(repo, row.file), target: "_blank", rel: "noopener" },
-                "Open on GitHub ↗",
+                { href: fileUrl(repo, path, entry.line), target: "_blank", rel: "noopener" },
+                `L${entry.line}`,
               ),
+              " ",
+              h("span", { class: "mono" }, entry.module),
+              ` ${entry.kind}`,
+              entry.names.length > 0
+                ? h("span", { class: "muted" }, ` { ${nameList(entry.names)} }`)
+                : null,
             ),
           ),
-        );
-      };
-      tr.addEventListener("click", toggle);
-      tr.addEventListener("keydown", (event) => event.key === "Enter" && toggle());
-      tbody.append(tr);
-    }
-    return h(
+        ),
+      ),
+      h(
+        "div",
+        null,
+        h("b", null, `Symbols (${file.symbols.length})`),
+        file.symbols.length === 0
+          ? h("p", { class: "muted" }, "none (text-scanned or import-only)")
+          : h(
+              "ul",
+              { class: "symbol-list" },
+              file.symbols.map((symbol) =>
+                h(
+                  "li",
+                  null,
+                  h("span", { class: "mono" }, symbol.symbol),
+                  h("span", { class: "muted" }, ` ${symbol.kind} × ${symbol.count}`),
+                ),
+              ),
+            ),
+      ),
+      h(
+        "div",
+        null,
+        h(
+          "a",
+          { href: fileUrl(repo, path), target: "_blank", rel: "noopener" },
+          "Open on GitHub ↗",
+        ),
+      ),
+    );
+  };
+
+  /** Makes a table row toggle a detail row (spanning `colspan` columns) below it. */
+  const expandable = (tr, colspan, load) => {
+    let open = null;
+    const toggle = async () => {
+      if (open) {
+        open.remove();
+        open = null;
+        tr.setAttribute("aria-expanded", "false");
+        return;
+      }
+      const detailRow = h(
+        "tr",
+        { class: "file-detail" },
+        h("td", { colspan: String(colspan) }, h("span", { class: "muted" }, "Loading…")),
+      );
+      open = detailRow;
+      tr.after(detailRow);
+      tr.setAttribute("aria-expanded", "true");
+      try {
+        fill(detailRow.firstChild, await load());
+      } catch (error) {
+        fill(detailRow.firstChild, h("span", { class: "error" }, error.message));
+      }
+    };
+    tr.classList.add("clickable");
+    tr.setAttribute("tabindex", "0");
+    tr.setAttribute("aria-expanded", "false");
+    tr.addEventListener("click", (event) => {
+      if (event.target.closest("a")) return; // links open, rows don't toggle
+      toggle();
+    });
+    tr.addEventListener("keydown", (event) => event.key === "Enter" && toggle());
+    return tr;
+  };
+
+  /** The Effect files of a repository; a row expands into its imports and symbols. */
+  const effectFilesTable = (repo, rows) =>
+    h(
       "table",
       null,
       h(
@@ -1253,9 +1476,27 @@
           h("th", null, "Parser"),
         ),
       ),
-      tbody,
+      h(
+        "tbody",
+        null,
+        rows.map((row) =>
+          expandable(
+            h(
+              "tr",
+              null,
+              h("td", { class: "wrap mono" }, row.file),
+              h("td", null, roleName[row.role] || row.role),
+              h("td", { class: "num" }, int(row.loc)),
+              h("td", { class: "num" }, int(row.importCount)),
+              h("td", { class: "num" }, int(row.symbolTotal)),
+              h("td", null, row.parser === "oxc" ? "" : row.parser),
+            ),
+            6,
+            () => fileDetail(repo, row.file),
+          ),
+        ),
+      ),
     );
-  };
 
   async function symbolDrawer(symbol, kind, key) {
     const rows = await api("symbol", { ...filterParams(), symbol, symbolKind: kind });
@@ -1331,7 +1572,7 @@
     }
     // Raw tables are not filtered: the filter row would only mislead there.
     document.getElementById("filters").hidden = state.tab === "data";
-    document.title = `e20r · ${{ overview: "Overview", repos: "Repositories", symbols: "Symbols", data: "Data" }[state.tab]}`;
+    document.title = `e20r · ${{ overview: "Overview", repos: "Repositories", symbols: "Symbols", files: "Files", data: "Data" }[state.tab]}`;
   };
 
   let lastViewKey = null;
@@ -1410,13 +1651,49 @@
     if (!meta) return;
     const processed = meta.tables.find((entry) => entry.name === "repo_state")?.rows ?? 0;
     const recent = meta.lastUpdate && Date.now() - Date.parse(meta.lastUpdate) < 60_000;
-    status.replaceChildren(
+    const stale = viewStale || drawerStale;
+    fill(
+      status,
       h("span", {
         class: `dot${recent ? " fresh" : ""}`,
         title: recent ? "written in the last minute" : "idle",
       }),
       `${int(processed)} repos · updated ${ago(meta.lastUpdate)}`,
+      stale
+        ? h(
+            "button",
+            {
+              type: "button",
+              class: "refresh",
+              title: "The database changed since this view was loaded",
+              onClick: () => {
+                viewStale = false;
+                if (drawerStale) {
+                  drawerStale = false;
+                  renderDrawer(true);
+                } else {
+                  renderView();
+                }
+                updateStatus();
+              },
+            },
+            "New data · Refresh",
+          )
+        : null,
     );
+  };
+
+  /**
+   * Views with interaction state (sorting, expanded rows, extra pages, an
+   * open drawer) are never re-rendered under the user: they get a refresh
+   * button instead. The Overview has none, so it refreshes itself.
+   */
+  let viewStale = false;
+  const onDatabaseChange = () => {
+    if (!drawer.hidden) drawerStale = true;
+    else if (state.tab === "overview") renderView();
+    else viewStale = true;
+    updateStatus();
   };
   const poll = async (first = false) => {
     try {
@@ -1424,10 +1701,7 @@
       const changed = state.meta !== null && meta.lastUpdate !== state.meta.lastUpdate;
       state.meta = meta;
       updateStatus();
-      if (changed && live.checked && !first) {
-        renderView();
-        renderDrawer(true);
-      }
+      if (changed && live.checked && !first) onDatabaseChange();
     } catch (error) {
       status.textContent = `database unavailable: ${error.message}`;
     }

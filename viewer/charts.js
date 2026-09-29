@@ -34,6 +34,17 @@
   const s = (tag, attrs, ...children) => h(tag, { ...attrs, svg: true }, ...children);
   Viz.h = h;
 
+  /**
+   * `element.replaceChildren` with `h`'s child rules: nested arrays are
+   * flattened and `null` / `undefined` / `false` are skipped (the native
+   * method would render them as the text "null").
+   */
+  Viz.fill = (element, ...children) => {
+    const holder = h("div", null, ...children);
+    element.replaceChildren(...holder.childNodes);
+    return element;
+  };
+
   // ---- tooltip: one element, shown on hover and on keyboard focus ----
 
   const tooltip = () => document.getElementById("tooltip");
@@ -78,7 +89,10 @@
     node.setAttribute("tabindex", "0");
     node.addEventListener("pointermove", (event) => Viz.showTip(tip, event.clientX, event.clientY));
     node.addEventListener("pointerleave", Viz.hideTip);
+    // Keyboard focus only: focus restored after a click or a closed drawer
+    // must not leave a tooltip hanging over the page.
     node.addEventListener("focus", () => {
+      if (!node.matches(":focus-visible")) return;
       const box = node.getBoundingClientRect();
       Viz.showTip(tip, box.left + box.width / 2, box.bottom - 10);
     });

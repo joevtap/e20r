@@ -5,3 +5,6 @@ node_modules
 .repos/effect
 .repos/opencode
 .env
+
+# Run output (pnpm e20r run 2>&1 | tee -a run.log)
+*.log

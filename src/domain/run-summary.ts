@@ -1,37 +1,34 @@
-import { Schema } from "effect";
-
 /**
  * A snapshot of the pipeline population at the end of one run: how many
  * repositories were probed, how many of them are Effect adopters, and how
  * deep the adoption goes. Stored as the `counts` of the run's row in `runs`,
- * so the ratios are preserved per run and can be trended over time.
+ * so the ratios are preserved per run and can be trended over time (the
+ * viewer's "Ratios over runs").
  *
  * The counts describe the population this tool can see — the top-N
  * TypeScript repositories of the GitHub crawl, not GitHub at large.
  */
-export const RunSummarySchema = Schema.Struct({
+export interface RunSummary {
   /** The selection population: every repository with a recorded state. */
-  population: Schema.Struct({
-    analyzedRepos: Schema.Finite,
-    cloneFailures: Schema.Finite,
-    adopters: Schema.Finite,
+  readonly population: {
+    readonly analyzedRepos: number;
+    readonly cloneFailures: number;
+    readonly adopters: number;
     /** Adopters kept out of the deep analysis (Effect itself, copies, configured). */
-    excludedAdopters: Schema.Finite,
+    readonly excludedAdopters: number;
     /** adopters / analyzedRepos; 0 when nothing was probed. */
-    adopterRatio: Schema.Finite,
-  }),
+    readonly adopterRatio: number;
+  };
 
   /** The deep-analysis population: the adopters that got usage analysis. */
-  deepAnalysis: Schema.Struct({
-    analyzedAdopters: Schema.Finite,
+  readonly deepAnalysis: {
+    readonly analyzedAdopters: number;
     /** Adopters whose source tree actually imports Effect. */
-    adoptersWithCodeUsage: Schema.Finite,
+    readonly adoptersWithCodeUsage: number;
     /** adoptersWithCodeUsage / analyzedAdopters; 0 when nothing was analyzed. */
-    codeUsageRatio: Schema.Finite,
-  }),
-});
-
-export type RunSummary = Schema.Schema.Type<typeof RunSummarySchema>;
+    readonly codeUsageRatio: number;
+  };
+}
 
 export interface RunSummaryCounts {
   readonly probed: number;

@@ -7,6 +7,8 @@ import { makeDatabaseLayer } from "../src/store/db.ts";
 import { Store, type RepoOutcome } from "../src/store/store.ts";
 import {
   defaultFilters,
+  fileSymbolsCsv,
+  fileTable,
   overview,
   parseFilters,
   repositories,
@@ -293,6 +295,98 @@ describe("viewer queries", () => {
       expect(authored.symbols.map((row) => row.symbol)).not.toContain("Schema.Struct");
       expect(generated.rows.map((row) => row["symbol"])).toEqual(["Schema.Struct", "Effect.gen"]);
     }).pipe((effect) => run(effect)),
+  );
+
+  it.effect("lists Effect files with their symbols, searchable by path and symbol", () =>
+    run(
+      Effect.all([
+        fileTable(
+          defaultFilters,
+          { path: "", uses: "" },
+          { key: "usages", dir: "desc" },
+          { limit: 10, offset: 0 },
+        ),
+        fileTable(
+          { ...defaultFilters, kind: "call" },
+          { path: "", uses: "Effect.gen" },
+          { key: "file", dir: "asc" },
+          { limit: 10, offset: 0 },
+        ),
+        fileTable(
+          defaultFilters,
+          { path: "test", uses: "" },
+          { key: "file", dir: "asc" },
+          { limit: 10, offset: 0 },
+        ),
+        fileTable(
+          defaultFilters,
+          { path: "", uses: "" },
+          { key: "usages", dir: "desc" },
+          { limit: 2, offset: 2 },
+        ),
+        fileTable(
+          defaultFilters,
+          { path: "", uses: "", repo: 2 },
+          { key: "file", dir: "asc" },
+          { limit: 10, offset: 0 },
+        ),
+      ]),
+    ).pipe(
+      Effect.map(([all, gen, tests, page, oneRepo]) => {
+        expect(oneRepo.rows.map((row) => row["file"])).toEqual(["src/x.ts", "test/x.test.ts"]);
+        expect([all.total, all.repos]).toEqual([5, 2]);
+        expect(all.rows.map((row) => [row["file"], row["usages"], row["distinctSymbols"]])).toEqual(
+          [
+            ["src/x.ts", 7, 1],
+            ["test/a.test.ts", 5, 1],
+            ["src/a.ts", 3, 1],
+            ["src/b.ts", 3, 2],
+            ["test/x.test.ts", 0, 0],
+          ],
+        );
+        expect(all.rows[3]?.topSymbols).toEqual([
+          ["Effect.Effect", "type-reference", 2],
+          ["Effect.gen", "call", 1],
+        ]);
+        expect(all.rows[4]?.topSymbols).toEqual([]);
+        // The position filter scopes the counts, not just the search.
+        expect(gen.rows.map((row) => [row["fullName"], row["file"], row["usages"]])).toEqual([
+          ["org/repo-1", "src/a.ts", 3],
+          ["org/repo-1", "src/b.ts", 1],
+          ["org/repo-2", "src/x.ts", 7],
+        ]);
+        expect(tests.rows.map((row) => row["file"])).toEqual(["test/a.test.ts", "test/x.test.ts"]);
+        expect([page.total, page.rows.map((row) => row["file"])]).toEqual([
+          5,
+          ["src/a.ts", "src/b.ts"],
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("exports the file selection as long-format CSV", () =>
+    run(
+      Effect.all([
+        fileSymbolsCsv(defaultFilters, { path: "", uses: "" }),
+        fileSymbolsCsv({ ...defaultFilters, role: "test" }, { path: "", uses: "" }),
+      ]),
+    ).pipe(
+      Effect.map(([all, tests]) => {
+        const lines = all.trim().split("\n");
+        expect(lines[0]).toBe("repo,stars,commit,file,role,package_dir,loc,symbol,kind,count");
+        expect(
+          lines.slice(1).map((line) => line.split(",").filter((_, i) => [0, 3, 7, 9].includes(i))),
+        ).toEqual([
+          ["org/repo-1", "src/a.ts", "Effect.gen", "3"],
+          ["org/repo-1", "src/b.ts", "Effect.Effect", "2"],
+          ["org/repo-1", "src/b.ts", "Effect.gen", "1"],
+          ["org/repo-1", "test/a.test.ts", "Effect.runPromise", "5"],
+          ["org/repo-2", "src/x.ts", "Effect.gen", "7"],
+          ["org/repo-2", "test/x.test.ts", "", ""],
+        ]);
+        expect(tests.trim().split("\n")).toHaveLength(3);
+      }),
+    ),
   );
 
   it.effect("filters and sorts repositories", () =>

@@ -11,7 +11,9 @@ pnpm e20r view --cache-path .e20r --port 8080 --host 0.0.0.0
 The server (`src/viewer/server.ts`) opens the database **read-only** and
 exposes a small JSON API; this directory is the static page that consumes
 it. SQLite runs in WAL mode, so the viewer can stay open while `e20r run` is
-writing: with **Live** on, the page re-renders when the database changes.
+writing. With **Live** on, the Overview refreshes itself when the database
+changes; the other views and an open drawer keep your sorting, expanded rows
+and scroll position and show a **New data · Refresh** button instead.
 
 ## Views
 
@@ -20,12 +22,14 @@ writing: with **Live** on, the page re-renders when the database changes.
 | **Overview** | Who adopts Effect (funnel, adoption by popularity band, how `effect` is declared, major versions), how deeply (share of TypeScript files per repository, where Effect lives by file role, imports per file) and what they use (packages and symbols by breadth), plus the ratios over runs. |
 | **Repositories** | Every processed repository, sortable on the server (stars, status, TS files, Effect files, depth, share of lines, Effect packages). A row opens its drawer. |
 | **Symbols** | Every `symbol × position` pair with the repositories, files and usages behind it. A row opens the repositories that use the symbol. |
+| **Files** | Every Effect file of the filtered repositories with its most used symbols inline (calls as `fn()`, types as `: T`), searchable by path and by "uses symbol" (e.g. every file calling `Layer.effect`). A row expands into the file's complete symbol list and its imports; **Download CSV** exports the selection as one line per file × symbol. |
 | **Data** | Raw rows of every table and aggregation view, paged. |
 
 The **repository drawer** shows the stage timings, the exclusion reason or
 failure, the most used symbols and imported packages, per-workspace-package
-adoption, the Effect files (each expands into its imports and symbols,
-linked to GitHub at the analyzed commit) and the Effect dependencies with
+adoption, the 50 busiest Effect files (each expands into its imports and
+symbols, linked to GitHub at the analyzed commit; "All files" opens the
+Files tab narrowed to the repository) and the Effect dependencies with
 catalog references resolved.
 
 ## Filters
@@ -72,6 +76,8 @@ fall back to their defaults.
 | `/api/repo?id=` | One repository's drawer |
 | `/api/file?repo=&file=` | One file's imports and symbols |
 | `/api/symbols?search=&sort=&dir=&limit=&offset=` | One page of symbol × position rows |
+| `/api/files?path=&uses=&sort=&dir=&limit=&offset=` | One page of Effect files, each with its top symbols |
+| `/api/files.csv?path=&uses=` | The same selection as CSV: `repo,stars,commit,file,role,package_dir,loc,symbol,kind,count` |
 | `/api/symbol?symbol=&symbolKind=` | Repositories using one symbol |
 | `/api/table?name=&limit=&offset=` | Raw rows of one table or view |
 

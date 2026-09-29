@@ -665,6 +665,183 @@ export const repositoryFile = (repoId: number, file: string) =>
     return { imports: imports.map(decodeJsonColumns), symbols };
   });
 
+// ---- files ----
+
+const fileSorts = {
+  usages: "usages",
+  symbols: "distinct_symbols",
+  loc: "sel.loc",
+  imports: "sel.import_count",
+  file: "s.full_name, sel.file",
+} as const;
+
+export { fileSorts };
+export type FileSort = keyof typeof fileSorts;
+
+/** File-level searches of the Files view, on top of the global filters. */
+export interface FileSearch {
+  /** Substring of the file path. */
+  readonly path: string;
+  /** Only files using a symbol containing this text (e.g. `Layer.effect`). */
+  readonly uses: string;
+  /** Only the files of this repository (the repository drawer's "all files" link). */
+  readonly repo?: number | undefined;
+}
+
+const likePattern = (text: string): string => `%${text.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
+
+/** How many of a file's symbols the Files table lists inline. */
+const inlineSymbols = 12;
+
+/**
+ * The Effect files of the filtered repositories, one row per file, each with
+ * its most used symbols inline (the complete list is `repositoryFile`).
+ * Symbol counts honor the position filter; files that import Effect without
+ * using any symbol through it are listed with zero.
+ */
+export const fileTable = (
+  filters: Filters,
+  search: FileSearch,
+  sort: { readonly key: FileSort; readonly dir: "asc" | "desc" },
+  page: { readonly limit: number; readonly offset: number },
+) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const { scope, role, kind } = makeFragments(sql, filters);
+    const selection = fileSelection(sql, { scope, role, kind }, search);
+    const direction = sort.dir === "asc" ? "ASC" : "DESC";
+    const order = sql.literal(
+      fileSorts[sort.key]
+        .split(", ")
+        .map((column) => `${column} ${direction}`)
+        .join(", "),
+    );
+
+    const [totals] = yield* sql<{ files: number; repos: number }>`${selection}
+      SELECT count(*) AS files, count(DISTINCT repo_id) AS repos FROM sel`;
+
+    // Every step is one pass over a table (grouped, then joined), never a
+    // per-file lookup: file_symbols reaches millions of rows.
+    const rows = yield* sql<Record<string, unknown>>`${selection},
+      sym AS (
+        SELECT y.repo_id, y.file, count(*) AS distinct_symbols, sum(y.count) AS usages
+        FROM file_symbols y JOIN f USING (repo_id)
+        WHERE ${kind("y")} GROUP BY y.repo_id, y.file
+      ),
+      page AS (
+        SELECT sel.repo_id, sel.file, s.full_name, s.commit_sha, r.html_url, r.stars,
+               sel.role, sel.package_dir, sel.loc, sel.import_count, sel.parser,
+               coalesce(sym.distinct_symbols, 0) AS distinct_symbols, coalesce(sym.usages, 0) AS usages
+        FROM sel JOIN repo_state s USING (repo_id) LEFT JOIN repos r ON r.id = sel.repo_id
+        LEFT JOIN sym ON sym.repo_id = sel.repo_id AND sym.file = sel.file
+        ORDER BY ${order}, s.full_name ASC, sel.file ASC
+        LIMIT ${page.limit} OFFSET ${page.offset}
+      ),
+      top AS (
+        SELECT y.repo_id, y.file, y.symbol, y.kind, y.count,
+               row_number() OVER (PARTITION BY y.repo_id, y.file ORDER BY y.count DESC, y.symbol) AS rank
+        FROM file_symbols y
+        WHERE y.repo_id IN (SELECT repo_id FROM page) AND ${kind("y")}
+      )
+      SELECT page.*, (
+        SELECT json_group_array(json_array(t.symbol, t.kind, t.count)) FROM (
+          SELECT top.symbol, top.kind, top.count FROM top
+          WHERE top.repo_id = page.repo_id AND top.file = page.file AND top.rank <= ${inlineSymbols}
+          ORDER BY top.rank
+        ) t
+      ) AS top_symbols
+      FROM page`;
+
+    return {
+      total: totals?.files ?? 0,
+      repos: totals?.repos ?? 0,
+      rows: rows.map((row) => ({
+        ...row,
+        topSymbols: JSON.parse(String(row["topSymbols"] ?? "[]")) as ReadonlyArray<
+          readonly [symbol: string, kind: string, count: number]
+        >,
+      })),
+    };
+  });
+
+/**
+ * `WITH f (scope), matched (files using the searched symbol), sel (the
+ * selected Effect files)`, shared by the table and the CSV. The symbol
+ * search is one scan of file_symbols, joined afterwards.
+ */
+const fileSelection = (
+  sql: SqlClient.SqlClient,
+  { scope, role, kind }: Pick<ReturnType<typeof makeFragments>, "scope" | "role" | "kind">,
+  search: FileSearch,
+) => {
+  const pathClause =
+    search.path === "" ? sql`1 = 1` : sql`sel_e.file LIKE ${likePattern(search.path)} ESCAPE '\\'`;
+  const matched =
+    search.uses === ""
+      ? sql``
+      : sql`, matched AS (
+          SELECT DISTINCT u.repo_id, u.file FROM file_symbols u JOIN f USING (repo_id)
+          WHERE u.symbol LIKE ${likePattern(search.uses)} ESCAPE '\\' AND ${kind("u")}
+        )`;
+  const matchedJoin =
+    search.uses === ""
+      ? sql``
+      : sql`JOIN matched m ON m.repo_id = sel_e.repo_id AND m.file = sel_e.file`;
+  const repoClause = search.repo === undefined ? sql`1 = 1` : sql`sel_e.repo_id = ${search.repo}`;
+  return sql`
+    WITH ${scope}${matched},
+    sel AS (
+      SELECT sel_e.* FROM effect_files sel_e JOIN f USING (repo_id) JOIN repo_state s USING (repo_id)
+      ${matchedJoin}
+      WHERE s.status = 'analyzed' AND ${role("sel_e")} AND ${pathClause} AND ${repoClause}
+    )`;
+};
+
+const csvCell = (value: unknown): string => {
+  const text = value === null || value === undefined ? "" : String(value);
+  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+};
+
+/** Hard cap of the CSV export, far above any realistic selection. */
+const csvRowLimit = 2_000_000;
+
+/**
+ * The same selection as `fileTable`, in long format — one line per file ×
+ * symbol × position, files without symbols included once with empty symbol
+ * columns — as CSV text, ready for pandas / DuckDB / a spreadsheet.
+ */
+export const fileSymbolsCsv = (filters: Filters, search: FileSearch) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const { scope, role, kind } = makeFragments(sql, filters);
+    const selection = fileSelection(sql, { scope, role, kind }, search);
+    // `CROSS JOIN` makes SQLite scan file_symbols once and probe the
+    // (auto-indexed) selection, instead of looking every file up in
+    // file_symbols; files without any symbol are added from a grouped pass.
+    const rows = yield* sql`${selection},
+      lines AS (
+        SELECT y.repo_id, y.file, y.symbol, y.kind, y.count
+        FROM file_symbols y CROSS JOIN sel ON sel.repo_id = y.repo_id AND sel.file = y.file
+        WHERE ${kind("y")}
+      ),
+      bare AS (
+        SELECT sel.repo_id, sel.file, NULL AS symbol, NULL AS kind, NULL AS count
+        FROM sel LEFT JOIN (SELECT DISTINCT repo_id, file FROM lines) l
+          ON l.repo_id = sel.repo_id AND l.file = sel.file
+        WHERE l.repo_id IS NULL
+      )
+      SELECT s.full_name AS repo, r.stars, s.commit_sha, x.file, sel.role, sel.package_dir, sel.loc,
+             x.symbol, x.kind, x.count
+      FROM (SELECT * FROM lines UNION ALL SELECT * FROM bare) x
+      JOIN sel ON sel.repo_id = x.repo_id AND sel.file = x.file
+      JOIN repo_state s ON s.repo_id = x.repo_id
+      LEFT JOIN repos r ON r.id = x.repo_id
+      ORDER BY s.full_name, x.file, x.count DESC, x.symbol
+      LIMIT ${csvRowLimit}`.values;
+    const header = "repo,stars,commit,file,role,package_dir,loc,symbol,kind,count";
+    return `${[header, ...rows.map((row) => row.map(csvCell).join(","))].join("\n")}\n`;
+  });
+
 // ---- symbols ----
 
 const symbolSorts = {
