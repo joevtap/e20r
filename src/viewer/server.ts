@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { NodeHttpServer } from "@effect/platform-node";
 import { SqliteClient } from "@effect/sql-sqlite-node";
-import { Effect, FileSystem, Layer, String as Str } from "effect";
+import { Data, Effect, FileSystem, Layer, String as Str } from "effect";
 import {
   HttpRouter,
   HttpServerRequest,
@@ -50,11 +50,19 @@ type Handler = Effect.Effect<
   HttpServerRequest.HttpServerRequest | HttpServerRequest.ParsedSearchParams | SqlClient.SqlClient
 >;
 
-/** A JSON endpoint: query parameters in, JSON out, failures as a 500 with a message. */
-const endpoint = <A, E>(
-  body: (
-    params: HttpServerRequest.ParsedSearchParams["Service"],
-  ) => Effect.Effect<A, E, SqlClient.SqlClient>,
+/** A request for something that does not exist (missing parameter, unknown id). */
+class NotFound extends Data.TaggedError("NotFound")<{}> {}
+
+const notFound = Effect.fail(new NotFound());
+
+/**
+ * A JSON endpoint: query parameters in, JSON out. `NotFound` (or a query
+ * finding nothing) answers 404; any other failure a 500 with its message.
+ */
+const endpoint = <Body extends Effect.Effect<unknown, unknown, SqlClient.SqlClient>>(
+  // Generic over the whole effect, so a body returning `cond ? query : notFound`
+  // (a union of two effect types) is accepted as is.
+  body: (params: HttpServerRequest.ParsedSearchParams["Service"]) => Body,
 ): Handler =>
   Effect.gen(function* () {
     const params = yield* HttpServerRequest.ParsedSearchParams;
@@ -64,7 +72,11 @@ const endpoint = <A, E>(
       : HttpServerResponse.jsonUnsafe(result);
   }).pipe(
     Effect.catch((error) =>
-      Effect.succeed(HttpServerResponse.jsonUnsafe({ error: String(error) }, { status: 500 })),
+      Effect.succeed(
+        error instanceof NotFound
+          ? HttpServerResponse.jsonUnsafe({ error: "not found" }, { status: 404 })
+          : HttpServerResponse.jsonUnsafe({ error: String(error) }, { status: 500 }),
+      ),
     ),
   ) as Handler;
 
@@ -119,7 +131,7 @@ const ApiRoutes = HttpRouter.addAll([
       const id = repoId(params);
       return Number.isInteger(id)
         ? repository(id, parseFilters(params))
-        : Effect.succeed(undefined);
+        : notFound;
     }),
   ),
   HttpRouter.route(
@@ -130,7 +142,7 @@ const ApiRoutes = HttpRouter.addAll([
       const file = param(params, "file");
       return Number.isInteger(id) && file !== undefined
         ? repositoryFile(id, file)
-        : Effect.succeed(undefined);
+        : notFound;
     }),
   ),
   HttpRouter.route(
@@ -165,7 +177,7 @@ const ApiRoutes = HttpRouter.addAll([
       const symbol = param(params, "symbol");
       const kind = param(params, "symbolKind") ?? "all";
       return symbol === undefined
-        ? Effect.succeed(undefined)
+        ? notFound
         : symbolRepositories(
             parseFilters(params),
             symbol,
@@ -182,7 +194,7 @@ const ApiRoutes = HttpRouter.addAll([
       const name = param(params, "name");
       return name !== undefined && (browsableTables as ReadonlyArray<string>).includes(name)
         ? tablePage(name as BrowsableTable, parsePage(params, 100))
-        : Effect.succeed(undefined);
+        : notFound;
     }),
   ),
 ]);
