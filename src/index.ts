@@ -2,7 +2,6 @@ import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import { Context, Effect, FileSystem, Layer, Option, Path } from "effect";
 import { Command, Flag } from "effect/unstable/cli";
 import { FetchHttpClient } from "effect/unstable/http";
-import { RateLimiter } from "effect/unstable/persistence";
 import {
   AppConfig,
   AppConfigLayer,
@@ -336,13 +335,8 @@ const e20r = Command.make("e20r").pipe(
   Command.withSubcommands([run, crawl, processCommand, report, view, exportCommand]),
 );
 
-const RateLimiterLayer = RateLimiter.layer.pipe(Layer.provide(RateLimiter.layerStoreMemory));
-
 // Flag-independent services only; everything derived from the configuration
 // is provided per command (`runtimeLayer`) so it sees the flag overrides.
-const CliLayer = NodeServices.layer.pipe(
-  Layer.provideMerge(FetchHttpClient.layer),
-  Layer.provideMerge(RateLimiterLayer),
-);
+const CliLayer = NodeServices.layer.pipe(Layer.provideMerge(FetchHttpClient.layer));
 
 NodeRuntime.runMain(Effect.provide(Command.run(e20r, { version: "0.2.0" }), CliLayer));

@@ -37,7 +37,10 @@ were in flight are processed again.
    archived:false`, sorted by stars. Search caps a query at 1,000 results,
    so the crawl walks star intervals (`stars:<=N`). It stops once it holds
    `REPO_SEARCH_BUDGET` repositories and has passed the star count at that
-   rank, so ties at the cut-off are all included. Each page is committed
+   rank, so ties at the cut-off are all included. Requests are paced
+   evenly, one every 6 seconds: the documented search quota is 30 a minute,
+   but GitHub's secondary limit refuses sorted repository searches at 15 a
+   minute, and each refusal costs a one-minute wait. Each page is committed
    together with the cursor of the next one, so the crawl can be resumed,
    and a completed crawl is not repeated.
 2. **Process** each of the top-N repositories, `CONCURRENCY` at a time, in
