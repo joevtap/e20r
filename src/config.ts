@@ -1,248 +1,145 @@
-import { Config, ConfigProvider, Context, Effect, Layer, Schema } from "effect";
+import { Config, ConfigProvider, Context, Effect, Layer, Option, Schema } from "effect";
 
 /**
- * Required GitHub API key for authenticated requests.
+ * GitHub API key for authenticated search requests. Only the crawl needs
+ * it, so it is optional here and required where it is used.
  *
  * It can be generated accessing: https://github.com/settings/personal-access-tokens/
  */
 const GithubApiKeySchema = Schema.Redacted(
-  Schema.String.check(
-    Schema.isNonEmpty({
-      message: "GITHUB_API_KEY must not be empty",
-    }),
-  ),
-).pipe(
-  Schema.annotateKey({
-    messageMissingKey: "GITHUB_API_KEY is required",
-  }),
+  Schema.String.check(Schema.isNonEmpty({ message: "GITHUB_API_KEY must not be empty" })),
 );
 
-const AppConfigOverridesSchema = Schema.Struct({
-  repoSearchBudget: Schema.FiniteFromString.pipe(
+const int = (min: number, max: number) =>
+  Schema.FiniteFromString.pipe(
     Schema.check(
       Schema.isInt(),
-      Schema.isGreaterThan(0),
-
-      // Sane default upper bound for an absurd amount of repositories to be inspected
-      Schema.isLessThanOrEqualTo(30_000),
+      Schema.isGreaterThanOrEqualTo(min),
+      Schema.isLessThanOrEqualTo(max),
     ),
-  ),
-  cachePath: Schema.String.check(
-    Schema.isNonEmpty({
-      message: "CACHE_PATH must not be empty",
-    }),
-  ),
-  noCache: Schema.Boolean,
-  ephemeral: Schema.Boolean,
-  cloneConcurrency: Schema.FiniteFromString.pipe(
-    Schema.check(Schema.isInt(), Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(64)),
-  ),
+  );
 
-  /**
-   * Deep-analysis (AST) concurrency, deliberately separate from the clone
-   * concurrency: each AST session spawns a language server that loads whole
-   * TypeScript projects and can use hundreds of MB to a few GB. Too many at
-   * once overwhelm small machines. Cloning is IO-bound and safe to run more
-   * widely than parsing.
-   */
-  analysisConcurrency: Schema.FiniteFromString.pipe(
-    Schema.check(Schema.isInt(), Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(16)),
-  ),
-
-  /** Skip the TypeScript AST phase entirely (text-scanned imports, no symbol counts). */
-  noAst: Schema.Boolean,
-  clean: Schema.Boolean,
-  fresh: Schema.Boolean,
-  fromCache: Schema.Boolean,
-  analysisOnly: Schema.Boolean,
-  skipAnalysis: Schema.Boolean,
-});
-
-const AppConfigOverridesInputSchema = Schema.Struct({
-  repoSearchBudget: Schema.optionalKey(
-    Schema.toType(AppConfigOverridesSchema.fields.repoSearchBudget),
-  ),
-  cachePath: Schema.optionalKey(Schema.toType(AppConfigOverridesSchema.fields.cachePath)),
-  noCache: Schema.optionalKey(Schema.toType(AppConfigOverridesSchema.fields.noCache)),
-  ephemeral: Schema.optionalKey(Schema.toType(AppConfigOverridesSchema.fields.ephemeral)),
-  cloneConcurrency: Schema.optionalKey(
-    Schema.toType(AppConfigOverridesSchema.fields.cloneConcurrency),
-  ),
-  analysisConcurrency: Schema.optionalKey(
-    Schema.toType(AppConfigOverridesSchema.fields.analysisConcurrency),
-  ),
-  noAst: Schema.optionalKey(Schema.toType(AppConfigOverridesSchema.fields.noAst)),
-  clean: Schema.optionalKey(Schema.toType(AppConfigOverridesSchema.fields.clean)),
-  fresh: Schema.optionalKey(Schema.toType(AppConfigOverridesSchema.fields.fresh)),
-  fromCache: Schema.optionalKey(Schema.toType(AppConfigOverridesSchema.fields.fromCache)),
-  analysisOnly: Schema.optionalKey(Schema.toType(AppConfigOverridesSchema.fields.analysisOnly)),
-  skipAnalysis: Schema.optionalKey(Schema.toType(AppConfigOverridesSchema.fields.skipAnalysis)),
-});
-
-export type AppConfigOverrides = Schema.Schema.Type<typeof AppConfigOverridesInputSchema>; /**
- * The application configuration schema with required and optional fields.
- *
- * Loaded by default from a `.env` file at the root of the repository.
- *
- * Fields:
- *
- * - Required GitHub API Key with no default value.
- * - Repo search budget with a default value of 5000.
- * - Cache directory path with a default value of ".e20r".
- * - Cache disabling switch with a default value of false.
- * - Clone deletion after successful analysis switch with a default value of false.
- * - Parallel clone count with a default value of 4.
- * - Parallel deep-analysis count (--analysis-concurrency) with a default
- *   value of 1; each AST session can use hundreds of MB to a few GB.
- * - AST skip switch (--no-ast) with a default value of false.
- * - Cache cleaning switch (--clean) with a default value of false.
- * - Fresh re-run switch (--fresh) with a default value of false.
- * - Search-from-cache switch (--from-cache) with a default value of false.
- * - Deep-analysis-only switch (--analysis-only) with a default value of false.
- * - Deep-analysis skip switch (--skip-analysis) with a default value of false.
+/**
+ * Every setting that can come from the environment (`.env`, constant-case
+ * keys: `repoSearchBudget` -> `REPO_SEARCH_BUDGET`) and be overridden by a
+ * command-line flag of the same name.
  */
+const settings = {
+  /** Number of top TypeScript repositories to process (sane upper bound: 30k). */
+  repoSearchBudget: int(1, 30_000),
+  /** Directory holding the state database and the work directory. */
+  cachePath: Schema.String.check(Schema.isNonEmpty({ message: "CACHE_PATH must not be empty" })),
+  /** In-memory database and a temporary work directory: nothing survives the run. */
+  noCache: Schema.Boolean,
+  /** Repositories processed (cloned, selected, analyzed) in parallel. */
+  concurrency: int(1, 64),
+  /** Failed repositories are retried on later runs up to this many attempts. */
+  maxAttempts: int(1, 100),
+  /** Source files above this size are scanned as text only (usually generated). */
+  maxParseBytes: int(1_000, 100_000_000),
+  /** Comma-separated `owner/name` list kept out of the deep analysis. */
+  excludeRepos: Schema.String,
+  /** Keep repositories that define `effect` / `@effect/*` packages out of the deep analysis. */
+  excludeEffectCopies: Schema.Boolean,
+  /** Keep work directories after processing (debugging only). */
+  keepClones: Schema.Boolean,
+  /** Wipe the database and the work directory before the run. */
+  clean: Schema.Boolean,
+  /** Re-process every repository, whatever its recorded state. */
+  fresh: Schema.Boolean,
+  /** Retry failed repositories even past `maxAttempts`. */
+  retryFailed: Schema.Boolean,
+  /** Re-process adopters recorded by an older analyzer version. */
+  reanalyze: Schema.Boolean,
+  /** Stop adopters at selection (no deep analysis). */
+  skipAnalysis: Schema.Boolean,
+  /** Discard the crawl cursor and crawl again from the top. */
+  recrawl: Schema.Boolean,
+};
+
+const SettingsSchema = Schema.Struct(settings);
+
+/** The decoded (type-side) settings, used to validate flag overrides. */
+const SettingsTypeSchema = Schema.toType(SettingsSchema);
+
+export type Settings = Schema.Schema.Type<typeof SettingsSchema>;
+
 const AppConfigSchema = Schema.Struct({
-  githubApiKey: GithubApiKeySchema,
-  ...AppConfigOverridesSchema.mapFields((fields) => {
-    return {
-      repoSearchBudget: fields.repoSearchBudget.pipe(
-        Schema.withDecodingDefaultKey(Effect.succeed("5000")),
-      ),
-      cachePath: fields.cachePath.pipe(Schema.withDecodingDefaultKey(Effect.succeed(".e20r"))),
-      noCache: fields.noCache.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
-      ephemeral: fields.ephemeral.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
-      cloneConcurrency: fields.cloneConcurrency.pipe(
-        Schema.withDecodingDefaultKey(Effect.succeed("4")),
-      ),
-      analysisConcurrency: fields.analysisConcurrency.pipe(
-        Schema.withDecodingDefaultKey(Effect.succeed("1")),
-      ),
-      noAst: fields.noAst.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
-      clean: fields.clean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
-      fresh: fields.fresh.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
-      fromCache: fields.fromCache.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
-      analysisOnly: fields.analysisOnly.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
-      skipAnalysis: fields.skipAnalysis.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
-    };
-  }).fields,
+  githubApiKey: Schema.optionalKey(GithubApiKeySchema),
+  repoSearchBudget: settings.repoSearchBudget.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed("5000")),
+  ),
+  cachePath: settings.cachePath.pipe(Schema.withDecodingDefaultKey(Effect.succeed(".e20r"))),
+  noCache: settings.noCache.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+  concurrency: settings.concurrency.pipe(Schema.withDecodingDefaultKey(Effect.succeed("4"))),
+  maxAttempts: settings.maxAttempts.pipe(Schema.withDecodingDefaultKey(Effect.succeed("3"))),
+  maxParseBytes: settings.maxParseBytes.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed("1000000")),
+  ),
+  excludeRepos: settings.excludeRepos.pipe(Schema.withDecodingDefaultKey(Effect.succeed(""))),
+  excludeEffectCopies: settings.excludeEffectCopies.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(true)),
+  ),
+  keepClones: settings.keepClones.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+  clean: settings.clean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+  fresh: settings.fresh.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+  retryFailed: settings.retryFailed.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+  reanalyze: settings.reanalyze.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+  skipAnalysis: settings.skipAnalysis.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+  recrawl: settings.recrawl.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
 });
 
 export type AppConfigValue = Schema.Schema.Type<typeof AppConfigSchema>;
 
-export const AppConfigConfig = Config.schema(AppConfigSchema);
-
 export class AppConfig extends Context.Service<AppConfig, AppConfigValue>()("e20r/AppConfig") {}
 
-export const AppConfigProviderLayer = ConfigProvider.layer(
+const AppConfigProviderLayer = ConfigProvider.layer(
   ConfigProvider.fromDotEnv().pipe(Effect.map(ConfigProvider.constantCase)),
 );
 
-export const AppConfigLayer = Layer.effect(AppConfig, AppConfigConfig).pipe(
+export const AppConfigLayer = Layer.effect(AppConfig, Config.schema(AppConfigSchema)).pipe(
   Layer.provide(AppConfigProviderLayer),
 );
 
+/** Flag values keyed by setting name; `Option.none()` means "not given". */
+export type SettingOverrides = { readonly [K in keyof Settings]?: Option.Option<Settings[K]> };
+
+/**
+ * The environment configuration with the given flags laid over it. The
+ * merged settings are validated as a whole, and contradictory combinations
+ * are rejected before any layer that depends on them is built (`--clean`
+ * would otherwise wipe a cache that `--no-cache` says must not be touched).
+ */
 export const makeAppConfigOverlayLayer = (
-  overrides: AppConfigOverrides,
+  overrides: SettingOverrides,
 ): Layer.Layer<AppConfig, Schema.SchemaError | string, AppConfig> =>
   Layer.effect(
     AppConfig,
     Effect.gen(function* () {
-      const validated = yield* Schema.decodeEffect(AppConfigOverridesInputSchema)(overrides);
-
       const current = yield* AppConfig;
-
-      // Effective values after the flag/env overlay, where contradictions
-      // must be caught before the cache layer is built: `--clean` would
-      // otherwise wipe a cache the run then reads (`--from-cache`) or that
-      // `--no-cache` says must not be touched.
-      const noCache = validated.noCache ?? current.noCache;
-      const clean = validated.clean ?? current.clean;
-      const fromCache = validated.fromCache ?? current.fromCache;
-      const analysisOnly = validated.analysisOnly ?? current.analysisOnly;
-      const skipAnalysis = validated.skipAnalysis ?? current.skipAnalysis;
-
-      if (noCache && fromCache) {
-        return yield* Effect.fail("--no-cache and --from-cache cannot be combined");
+      const given: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(overrides) as Array<
+        [string, Option.Option<unknown>]
+      >) {
+        if (Option.isSome(value)) given[key] = value.value;
       }
-      if (noCache && clean) {
+      const { githubApiKey, ...base } = current;
+      const merged = yield* Schema.decodeEffect(SettingsTypeSchema)({ ...base, ...given });
+
+      if (merged.noCache && merged.clean) {
         return yield* Effect.fail("--no-cache and --clean cannot be combined");
       }
-      if (clean && fromCache) {
-        return yield* Effect.fail(
-          "--clean and --from-cache cannot be combined: --clean wipes the cache that --from-cache reads",
-        );
-      }
-      if (analysisOnly && skipAnalysis) {
-        return yield* Effect.fail("--analysis-only and --skip-analysis cannot be combined");
-      }
-      if (analysisOnly && noCache) {
-        return yield* Effect.fail(
-          "--analysis-only and --no-cache cannot be combined: --analysis-only selects repositories from the cached adopter state",
-        );
+      if (merged.fresh && merged.reanalyze) {
+        return yield* Effect.fail("--fresh already re-processes everything; drop --reanalyze");
       }
 
-      return {
-        ...current,
-        ...(validated.repoSearchBudget === undefined
-          ? {}
-          : {
-              repoSearchBudget: validated.repoSearchBudget,
-            }),
-        ...(validated.cachePath === undefined
-          ? {}
-          : {
-              cachePath: validated.cachePath,
-            }),
-        ...(validated.noCache === undefined
-          ? {}
-          : {
-              noCache: validated.noCache,
-            }),
-        ...(validated.ephemeral === undefined
-          ? {}
-          : {
-              ephemeral: validated.ephemeral,
-            }),
-        ...(validated.cloneConcurrency === undefined
-          ? {}
-          : {
-              cloneConcurrency: validated.cloneConcurrency,
-            }),
-        ...(validated.analysisConcurrency === undefined
-          ? {}
-          : {
-              analysisConcurrency: validated.analysisConcurrency,
-            }),
-        ...(validated.noAst === undefined
-          ? {}
-          : {
-              noAst: validated.noAst,
-            }),
-        ...(validated.clean === undefined
-          ? {}
-          : {
-              clean: validated.clean,
-            }),
-        ...(validated.fresh === undefined
-          ? {}
-          : {
-              fresh: validated.fresh,
-            }),
-        ...(validated.fromCache === undefined
-          ? {}
-          : {
-              fromCache: validated.fromCache,
-            }),
-        ...(validated.analysisOnly === undefined
-          ? {}
-          : {
-              analysisOnly: validated.analysisOnly,
-            }),
-        ...(validated.skipAnalysis === undefined
-          ? {}
-          : {
-              skipAnalysis: validated.skipAnalysis,
-            }),
-      };
+      return { ...merged, ...(githubApiKey === undefined ? {} : { githubApiKey }) };
     }),
   );
+
+/** The configured exclusion list, parsed. */
+export const excludedRepos = (config: Settings): ReadonlyArray<string> =>
+  config.excludeRepos
+    .split(",")
+    .map((name) => name.trim())
+    .filter((name) => name !== "");

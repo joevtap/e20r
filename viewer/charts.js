@@ -1,178 +1,295 @@
 /**
- * Chart primitives: tiny dependency-free bars, histograms and trends.
+ * Chart primitives for the viewer: horizontal bars, a column histogram and
+ * a line trend with a crosshair. Dependency-free DOM builders; every label
+ * goes through `textContent` (labels are repository and symbol names, i.e.
+ * untrusted data). Values always stay readable without hovering: bars and
+ * columns are direct-labeled, and the tooltip only adds context.
  *
- * Everything renders as plain HTML/CSS (with one inline SVG for trends), so
- * the viewer stays double-clickable. All values are escaped; charts take
- * plain numbers and label strings only.
- *
- * Charts are registered on `window.Viz.charts` and rendered by app.js.
+ * Exposed as `window.Viz.charts`; `window.Viz.h` is the DOM helper.
  */
 (function () {
   "use strict";
 
   const Viz = (window.Viz = window.Viz || {});
 
-  const escapeHtml = (value) =>
-    String(value).replace(
-      /[&<>"']/g,
-      (char) =>
-        ({
-          "&": "&amp;",
-          "<": "&lt;",
-          ">": "&gt;",
-          '"': "&quot;",
-          "'": "&#39;",
-        })[char],
+  /** `h("div", { class: "x", onClick }, child, "text", ...)`: children are nodes or text. */
+  const h = (tag, attrs, ...children) => {
+    const node =
+      tag === "svg" || attrs?.svg
+        ? document.createElementNS("http://www.w3.org/2000/svg", tag)
+        : document.createElement(tag);
+    for (const [key, value] of Object.entries(attrs || {})) {
+      if (value === undefined || value === null || value === false || key === "svg") continue;
+      if (key.startsWith("on") && typeof value === "function")
+        node.addEventListener(key.slice(2).toLowerCase(), value);
+      else if (key === "dataset") Object.assign(node.dataset, value);
+      else node.setAttribute(key, value === true ? "" : String(value));
+    }
+    for (const child of children.flat(Infinity)) {
+      if (child === undefined || child === null || child === false) continue;
+      node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+    }
+    return node;
+  };
+  const s = (tag, attrs, ...children) => h(tag, { ...attrs, svg: true }, ...children);
+  Viz.h = h;
+
+  // ---- tooltip: one element, shown on hover and on keyboard focus ----
+
+  const tooltip = () => document.getElementById("tooltip");
+
+  /** Content: `{ value, label, rows?: [{ value, label, series }] }`. */
+  const renderTip = (tip) =>
+    tip.rows
+      ? tip.rows.map((row) =>
+          h(
+            "div",
+            { class: "tip-row" },
+            h("i", { style: `background:var(--${row.series})` }),
+            h("span", { class: "tip-value" }, row.value),
+            h("span", { class: "tip-label" }, row.label),
+          ),
+        )
+      : [
+          h("div", { class: "tip-value" }, tip.value),
+          tip.label ? h("div", { class: "tip-label" }, tip.label) : null,
+        ];
+
+  const place = (element, x, y) => {
+    const box = element.getBoundingClientRect();
+    const left = Math.min(window.innerWidth - box.width - 8, x + 14);
+    const top = y + 16 + box.height > window.innerHeight ? y - box.height - 12 : y + 16;
+    element.style.left = `${Math.max(8, left)}px`;
+    element.style.top = `${Math.max(8, top)}px`;
+  };
+
+  Viz.showTip = (tip, x, y) => {
+    const element = tooltip();
+    element.replaceChildren(...renderTip(tip));
+    element.hidden = false;
+    place(element, x, y);
+  };
+  Viz.hideTip = () => {
+    tooltip().hidden = true;
+  };
+
+  /** Makes `node` show `tip` on hover and focus; `onClick` makes it activatable. */
+  const interactive = (node, tip, onClick) => {
+    node.setAttribute("tabindex", "0");
+    node.addEventListener("pointermove", (event) => Viz.showTip(tip, event.clientX, event.clientY));
+    node.addEventListener("pointerleave", Viz.hideTip);
+    node.addEventListener("focus", () => {
+      const box = node.getBoundingClientRect();
+      Viz.showTip(tip, box.left + box.width / 2, box.bottom - 10);
+    });
+    node.addEventListener("blur", Viz.hideTip);
+    if (onClick) {
+      node.dataset.clickable = "";
+      node.setAttribute("role", "button");
+      node.addEventListener("click", () => {
+        Viz.hideTip();
+        onClick();
+      });
+      node.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onClick();
+        }
+      });
+    }
+    return node;
+  };
+
+  const card = (spec, body) =>
+    h(
+      "section",
+      { class: `card${spec.wide ? " wide" : ""}` },
+      h("h3", null, spec.title),
+      spec.subtitle ? h("p", { class: "sub" }, spec.subtitle) : null,
+      body,
     );
 
-  const formatNumber = (value) =>
-    Number(value).toLocaleString("en-US", { maximumFractionDigits: 2 });
-
-  /** Renders a labelled bar row. */
-  const barRow = (label, value, widthPercent, hint, formatted) =>
-    `<div class="bar-row">` +
-    `<div class="bar-label" title="${escapeHtml(label)}">${escapeHtml(label)}</div>` +
-    `<div class="bar-track"><div class="bar-fill" style="width:${Math.max(1, widthPercent).toFixed(1)}%"></div></div>` +
-    `<div class="bar-value"${hint ? ` title="${escapeHtml(hint)}"` : ""}>${escapeHtml(formatted)}</div>` +
-    `</div>`;
+  const empty = (text) => h("p", { class: "empty" }, text || "No data for the current filters.");
 
   /**
-   * Horizontal bars: `{ title, subtitle, rows: [{ label, value, hint? }],
-   * format? }`. Sorted by value (descending) by the caller.
+   * Horizontal bars, one series: `{ title, subtitle, rows: [{ label, value,
+   * display, tip?, onClick? }], max? }`. Rows keep the caller's order.
    */
-  Viz.charts = Viz.charts || {};
-
-  Viz.charts.bars = function bars(container, spec) {
+  const bars = (spec) => {
     const rows = spec.rows || [];
-    const max = Math.max(1, ...rows.map((row) => row.value));
-    const format = spec.format || formatNumber;
-    const body =
-      rows.length === 0
-        ? `<p class="chart-empty">no data</p>`
-        : rows
-            .map((row) =>
-              barRow(
-                row.label,
-                row.value,
-                (row.value / max) * 100,
-                row.hint,
-                format(row.value, row),
-              ),
-            )
-            .join("");
-    container.innerHTML =
-      `<h3>${escapeHtml(spec.title)}</h3>` +
-      (spec.subtitle ? `<p class="chart-sub">${escapeHtml(spec.subtitle)}</p>` : "") +
-      `<div class="chart-body">${body}</div>`;
+    if (rows.length === 0) return card(spec, empty(spec.empty));
+    const max = spec.max ?? Math.max(...rows.map((row) => row.value), 0);
+    return card(
+      spec,
+      h(
+        "div",
+        { class: "bars", role: "list" },
+        rows.map((row) => {
+          const width = max > 0 ? (row.value / max) * 100 : 0;
+          const node = h(
+            "div",
+            { class: "bar", role: "listitem", "aria-label": `${row.label}: ${row.display}` },
+            h("span", { class: "bar-label", title: row.label }, row.label),
+            h(
+              "span",
+              { class: "bar-track" },
+              h("span", { class: "bar-fill", style: `width:${width.toFixed(2)}%` }),
+            ),
+            h("span", { class: "bar-value" }, row.display),
+          );
+          return interactive(
+            node,
+            row.tip || { value: row.display, label: row.label },
+            row.onClick,
+          );
+        }),
+      ),
+    );
   };
 
-  /**
-   * Vertical histogram: `{ title, subtitle, bins: [{ label, count, hint? }],
-   * format? }`. Bins keep their given order (that is the x axis).
-   */
-  Viz.charts.histogram = function histogram(container, spec) {
+  /** Vertical columns in the given order (a histogram's bins): `{ bins: [{ label, value, display, tip? }] }`. */
+  const columns = (spec) => {
     const bins = spec.bins || [];
-    const max = Math.max(1, ...bins.map((bin) => bin.count));
-    const format = spec.format || formatNumber;
-    const body =
-      bins.length === 0
-        ? `<p class="chart-empty">no data</p>`
-        : `<div class="histogram">` +
-          bins
-            .map(
-              (bin) =>
-                `<div class="hist-col">` +
-                `<div class="hist-value">${escapeHtml(format(bin.count))}</div>` +
-                `<div class="hist-bar-wrap"><div class="hist-bar" style="height:${Math.max(bin.count > 0 ? 3 : 0, (bin.count / max) * 100).toFixed(1)}%" title="${escapeHtml(bin.hint || `${bin.label}: ${format(bin.count)}`)}"></div></div>` +
-                `<div class="hist-label">${escapeHtml(bin.label)}</div>` +
-                `</div>`,
-            )
-            .join("") +
-          `</div>`;
-    container.innerHTML =
-      `<h3>${escapeHtml(spec.title)}</h3>` +
-      (spec.subtitle ? `<p class="chart-sub">${escapeHtml(spec.subtitle)}</p>` : "") +
-      `<div class="chart-body">${body}</div>`;
+    if (bins.every((bin) => bin.value === 0)) return card(spec, empty(spec.empty));
+    const max = Math.max(...bins.map((bin) => bin.value), 1);
+    return card(
+      spec,
+      h(
+        "div",
+        { class: "columns" },
+        bins.map((bin) =>
+          interactive(
+            h(
+              "div",
+              { class: "col", "aria-label": `${bin.label}: ${bin.display}` },
+              h("div", { class: "col-value" }, bin.value > 0 ? bin.display : ""),
+              h("div", {
+                class: "col-bar",
+                style: `height:${bin.value > 0 ? Math.max(2, (bin.value / max) * 100).toFixed(2) : 0}%`,
+              }),
+              h("div", { class: "col-label" }, bin.label),
+            ),
+            bin.tip || { value: bin.display, label: bin.label },
+          ),
+        ),
+      ),
+    );
   };
 
   /**
-   * Multi-series trend over runs: `{ title, subtitle, series: [{ label,
-   * points: [{ x, y }] }], format? }`. `x` is a display label (run date),
-   * `y` a number. Rendered as an inline SVG line chart with dots.
+   * Line trend on one 0..1 axis (ratios): `{ series: [{ label, className,
+   * points: [{ x, y }] }], format }`. A crosshair snaps to the nearest x and
+   * the tooltip lists every series there.
    */
-  Viz.charts.trend = function trend(container, spec) {
-    const series = (spec.series || []).filter((s) => (s.points || []).length > 0);
-    const format = spec.format || ((value) => `${(value * 100).toFixed(1)}%`);
-    const width = 460;
-    const height = 150;
-    const pad = { top: 8, right: 34, bottom: 22, left: 46 };
+  const trend = (spec) => {
+    const series = spec.series.filter((line) => line.points.length > 0);
+    const xs = series[0]?.points.map((point) => point.x) || [];
+    if (xs.length < 2) return card(spec, empty(spec.empty));
+    const width = 640;
+    const height = 200;
+    const pad = { top: 10, right: 12, bottom: 26, left: 44 };
+    const maxY = Math.max(0.01, ...series.flatMap((line) => line.points.map((point) => point.y)));
+    const top = Math.min(1, Math.ceil((maxY * 1.15) / 0.05) * 0.05);
+    const x = (index) => pad.left + (index / (xs.length - 1)) * (width - pad.left - pad.right);
+    const y = (value) => height - pad.bottom - (value / top) * (height - pad.top - pad.bottom);
+    const ticks = [0, top / 2, top];
 
-    if (series.length === 0) {
-      container.innerHTML =
-        `<h3>${escapeHtml(spec.title)}</h3>` +
-        (spec.subtitle ? `<p class="chart-sub">${escapeHtml(spec.subtitle)}</p>` : "") +
-        `<div class="chart-body"><p class="chart-empty">no data</p></div>`;
-      return;
-    }
+    const crosshair = s("line", {
+      class: "crosshair",
+      y1: pad.top,
+      y2: height - pad.bottom,
+      visibility: "hidden",
+    });
+    const svg = s(
+      "svg",
+      { viewBox: `0 0 ${width} ${height}`, role: "img", "aria-label": spec.title },
+      ticks.map((tick) => [
+        s("line", {
+          class: "gridline",
+          x1: pad.left,
+          x2: width - pad.right,
+          y1: y(tick),
+          y2: y(tick),
+        }),
+        s(
+          "text",
+          { class: "axis-label", x: pad.left - 8, y: y(tick) + 4, "text-anchor": "end" },
+          spec.format(tick),
+        ),
+      ]),
+      xs.map((label, index) =>
+        index === 0 || index === xs.length - 1 || xs.length <= 8
+          ? s(
+              "text",
+              {
+                class: "axis-label",
+                x: x(index),
+                y: height - 8,
+                "text-anchor": index === 0 ? "start" : index === xs.length - 1 ? "end" : "middle",
+              },
+              label,
+            )
+          : null,
+      ),
+      crosshair,
+      series.map((line) => [
+        s("polyline", {
+          class: `line ${line.className}`,
+          points: line.points
+            .map((point, index) => `${x(index).toFixed(1)},${y(point.y).toFixed(1)}`)
+            .join(" "),
+        }),
+        line.points.map((point, index) =>
+          s("circle", { class: `dot ${line.className}`, cx: x(index), cy: y(point.y), r: 4 }),
+        ),
+      ]),
+    );
 
-    const xs = [...new Set(series.flatMap((s) => s.points.map((p) => String(p.x))))];
-    const maxY = Math.max(0.0001, ...series.flatMap((s) => s.points.map((p) => Number(p.y) || 0)));
-    const xOf = (x) =>
-      pad.left +
-      (xs.length === 1
-        ? (width - pad.left - pad.right) / 2
-        : (xs.indexOf(String(x)) / (xs.length - 1)) * (width - pad.left - pad.right));
-    const yOf = (y) =>
-      height - pad.bottom - ((Number(y) || 0) / maxY) * (height - pad.top - pad.bottom);
+    const nearest = (event) => {
+      const box = svg.getBoundingClientRect();
+      const px = ((event.clientX - box.left) / box.width) * width;
+      return Math.max(
+        0,
+        Math.min(
+          xs.length - 1,
+          Math.round(((px - pad.left) / (width - pad.left - pad.right)) * (xs.length - 1)),
+        ),
+      );
+    };
+    svg.addEventListener("pointermove", (event) => {
+      const index = nearest(event);
+      crosshair.setAttribute("x1", x(index));
+      crosshair.setAttribute("x2", x(index));
+      crosshair.setAttribute("visibility", "visible");
+      Viz.showTip(
+        {
+          rows: [
+            ...series.map((line) => ({
+              value: spec.format(line.points[index].y),
+              label: line.label,
+              series: line.className,
+            })),
+            { value: "", label: xs[index], series: "axis" },
+          ],
+        },
+        event.clientX,
+        event.clientY,
+      );
+    });
+    svg.addEventListener("pointerleave", () => {
+      crosshair.setAttribute("visibility", "hidden");
+      Viz.hideTip();
+    });
 
-    const colors = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)"];
-    const paths = series
-      .map((s, index) => {
-        const points = s.points.map((p) => `${xOf(p.x).toFixed(1)},${yOf(p.y).toFixed(1)}`);
-        const dots = s.points
-          .map(
-            (p) =>
-              `<circle cx="${xOf(p.x).toFixed(1)}" cy="${yOf(p.y).toFixed(1)}" r="3" fill="${colors[index % colors.length]}"><title>${escapeHtml(`${s.label} · ${p.x}: ${format(p.y)}`)}</title></circle>`,
-          )
-          .join("");
-        return (
-          `<polyline points="${points.join(" ")}" fill="none" stroke="${colors[index % colors.length]}" stroke-width="2"/>` +
-          dots
-        );
-      })
-      .join("");
-
-    const xLabels = xs
-      .map(
-        (x) =>
-          `<text x="${xOf(x).toFixed(1)}" y="${height - 6}" text-anchor="middle" class="trend-x">${escapeHtml(String(x).slice(0, 11))}</text>`,
-      )
-      .join("");
-    const yLabels = [0, maxY]
-      .map(
-        (y) =>
-          `<text x="${pad.left - 6}" y="${(yOf(y) + 3).toFixed(1)}" text-anchor="end" class="trend-y">${escapeHtml(format(y))}</text>`,
-      )
-      .join("");
-
-    const legend = series
-      .map(
-        (s, index) =>
-          `<span class="trend-legend-item"><i style="background:${colors[index % colors.length]}"></i>${escapeHtml(s.label)}</span>`,
-      )
-      .join("");
-
-    container.innerHTML =
-      `<h3>${escapeHtml(spec.title)}</h3>` +
-      (spec.subtitle ? `<p class="chart-sub">${escapeHtml(spec.subtitle)}</p>` : "") +
-      `<div class="chart-body">` +
-      `<svg viewBox="0 0 ${width} ${height}" class="trend-svg" role="img" aria-label="${escapeHtml(spec.title)}">` +
-      `<line x1="${pad.left}" y1="${height - pad.bottom}" x2="${width - pad.right}" y2="${height - pad.bottom}" class="trend-axis"/>` +
-      yLabels +
-      xLabels +
-      paths +
-      `</svg>` +
-      `<div class="trend-legend">${legend}</div>` +
-      `</div>`;
+    const legend = h(
+      "div",
+      { class: "legend" },
+      series.map((line) =>
+        h("span", null, h("i", { style: `background:var(--${line.className})` }), line.label),
+      ),
+    );
+    return card(spec, h("div", { class: "trend" }, svg, legend));
   };
+
+  Viz.charts = { bars, columns, trend, card, empty, interactive };
 })();

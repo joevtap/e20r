@@ -1,643 +1,1442 @@
 /**
- * Viewer application: loads local JSONL files, validates records minimally,
- * and renders searchable / filterable / sortable tables, summary tiles and
- * charts.
+ * The e20r viewer: a read-only window onto the state database, served by
+ * `e20r view`. Every number comes from the JSON API (`/api/*`, see
+ * `src/viewer/queries.ts`), which aggregates in SQL; the page only renders.
  *
- * Extension points are marked with "EXTENSION POINT" comments; see README.md.
+ * The URL hash holds the whole view state (tab, filters, open drawer), so a
+ * view can be bookmarked or shared, and the back button works.
  */
 (function () {
   "use strict";
 
-  const Viz = window.Viz;
+  const { h, charts } = window.Viz;
 
   // ------------------------------------------------------------------
-  // State
+  // Formatting
   // ------------------------------------------------------------------
 
-  /** @type {{ rows: Array<object>, problems: Array<{file: string, line: number, text: string}> }} */
-  const state = {
-    rows: [],
-    problems: [],
-    files: [],
-    search: "",
-    type: "all",
-    status: "all",
-    adopter: "all",
-    signals: new Set(),
-    // Sort state per record type: { type, column, dir } with dir 1 = ascending.
-    sort: { type: "clone-state", column: "recordedAt", dir: -1 },
+  const intFormat = new Intl.NumberFormat("en-US");
+  const compactFormat = new Intl.NumberFormat("en-US", {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  });
+  const int = (value) => (value === null || value === undefined ? "–" : intFormat.format(value));
+  const compact = (value) =>
+    value === null || value === undefined ? "–" : compactFormat.format(value);
+  const pct = (value, digits = 1) =>
+    value === null || value === undefined || Number.isNaN(value)
+      ? "–"
+      : `${(value * 100).toFixed(digits)}%`;
+  const share = (part, whole) => (whole > 0 ? part / whole : 0);
+  const seconds = (millis) => `${(millis / 1000).toFixed(1)}s`;
+
+  const ago = (iso) => {
+    if (!iso) return "never";
+    const delta = (Date.now() - Date.parse(iso)) / 1000;
+    if (delta < 60) return `${Math.max(0, Math.round(delta))}s ago`;
+    if (delta < 3600) return `${Math.round(delta / 60)}m ago`;
+    if (delta < 86400) return `${Math.round(delta / 3600)}h ago`;
+    return new Date(iso).toISOString().slice(0, 10);
   };
 
-  const MAX_ROWS = 500;
+  const roleLabel = {
+    all: "TypeScript files",
+    authored: "hand-written files",
+    source: "production files",
+    test: "test files",
+    generated: "generated files",
+  };
 
-  /** Fixed bins for "effect imports per effect-using file". */
-  const IMPORT_BINS = [
-    { label: "1", min: 1, max: 1 },
-    { label: "2", min: 2, max: 2 },
-    { label: "3", min: 3, max: 3 },
-    { label: "4", min: 4, max: 4 },
-    { label: "5–9", min: 5, max: 9 },
-    { label: "10–19", min: 10, max: 19 },
-    { label: "20–49", min: 20, max: 49 },
-    { label: "50–99", min: 50, max: 99 },
-    { label: "100+", min: 100, max: Infinity },
-  ];
+  const roleName = { source: "production", test: "tests", generated: "generated" };
+
+  const statusLabel = {
+    analyzed: "analyzed",
+    excluded: "excluded",
+    selected: "awaiting analysis",
+    "not-adopter": "not an adopter",
+    failed: "failed",
+  };
+
+  const exclusionText = {
+    "effect-ts-org":
+      "Owned by the Effect-TS organization: Effect itself is not an adopter of Effect.",
+    configured: "Listed in EXCLUDE_REPOS.",
+    "defines-effect-package":
+      "Defines a package named `effect` or `@effect/*` in its own tree: a copy or mirror of Effect.",
+  };
+
+  const badge = (status) => h("span", { class: `badge ${status}` }, statusLabel[status] || status);
+
+  const githubUrl = (repo) => repo.htmlUrl || `https://github.com/${repo.fullName}`;
+  const fileUrl = (repo, file, line) =>
+    `${githubUrl(repo)}/blob/${repo.commitSha}/${file.split("/").map(encodeURIComponent).join("/")}${line ? `#L${line}` : ""}`;
 
   // ------------------------------------------------------------------
-  // Loading, minimal validation and per-row derivation
+  // State <-> URL hash
   // ------------------------------------------------------------------
 
-  /**
-   * Derived numbers are computed once per row at load time (EXTENSION POINT:
-   * cheap per-keystroke aggregation depends on this), so filtering, sorting
-   * and chart rendering never walk huge nested signals again.
-   */
-  function deriveRow(record) {
-    const derived = {
-      search: JSON.stringify(record).toLowerCase(),
-      // selection stage
-      cloned: record.cloneStatus === "cloned",
-      adopter: Boolean(record.adopter),
-      // deep-analysis stage
-      analyzed: record.analysisStatus === "analyzed",
-      tsSource: 0,
-      tsTest: 0,
-      tsTotal: 0,
-      effectFiles: 0,
-      effectImports: 0,
-      packages: [],
-      symbols: null,
-      importBins: null,
-    };
+  const defaults = { q: "", status: "processed", minStars: "", role: "all", kind: "all" };
+  const tabs = ["overview", "repos", "symbols", "data"];
 
-    if (record.analysisStatus !== undefined) {
-      const tsFiles = Viz.signalOf(record, "ts-file-count");
-      if (tsFiles && tsFiles.byRole) {
-        derived.tsSource = tsFiles.byRole.source || 0;
-        derived.tsTest = tsFiles.byRole.test || 0;
-        derived.tsTotal = tsFiles.total || derived.tsSource + derived.tsTest;
-      }
-      const using = Viz.signalOf(record, "files-using-effect-count");
-      if (using) derived.effectFiles = using.count || 0;
+  const state = {
+    tab: "overview",
+    filters: { ...defaults },
+    repo: null,
+    symbol: null,
+    symbolKind: "all",
+    search: "",
+    reposSort: { key: "stars", dir: "desc" },
+    symbolsSort: { key: "repos", dir: "desc" },
+    table: "repo_state",
+    lastUpdate: null,
+    meta: null,
+  };
 
-      const imports = Viz.signalOf(record, "effect-imports-per-file");
-      if (imports) {
-        derived.effectImports = imports.importCount || 0;
-        const bins = new Array(IMPORT_BINS.length).fill(0);
-        for (const file of imports.files || []) {
-          const count = (file.imports || []).length;
-          const index = IMPORT_BINS.findIndex((bin) => count >= bin.min && count <= bin.max);
-          if (index >= 0) bins[index] += 1;
-        }
-        derived.importBins = bins;
-      }
-
-      const used = Viz.signalOf(record, "effect-packages-used");
-      if (used) derived.packages = used.packages || [];
-
-      const symbols = new Map();
-      for (const signal of record.signals || []) {
-        if (signal._tag !== "effect-symbols-per-file") continue;
-        for (const usage of signal.symbols || []) {
-          symbols.set(usage.symbol, (symbols.get(usage.symbol) || 0) + (usage.count || 0));
-        }
-      }
-      if (symbols.size > 0) derived.symbols = symbols;
+  const readHash = () => {
+    const [tab, query] = location.hash.replace(/^#/, "").split("?");
+    const params = new URLSearchParams(query || "");
+    state.tab = tabs.includes(tab) ? tab : "overview";
+    for (const key of Object.keys(defaults)) state.filters[key] = params.get(key) ?? defaults[key];
+    state.repo = params.get("repo");
+    state.symbol = params.get("symbol");
+    state.symbolKind = params.get("symbolKind") || "all";
+    state.search = params.get("search") || "";
+    state.table = params.get("table") || state.table;
+    const sort = params.get("sort");
+    if (sort) {
+      const [key, dir] = sort.split(":");
+      const target = state.tab === "symbols" ? state.symbolsSort : state.reposSort;
+      target.key = key;
+      target.dir = dir === "asc" ? "asc" : "desc";
     }
+  };
 
-    return derived;
-  }
+  const hashFor = (changes) => {
+    const next = { ...state, filters: { ...state.filters }, ...changes };
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(next.filters)) {
+      if (value !== "" && value !== defaults[key]) params.set(key, value);
+    }
+    if (next.repo) params.set("repo", next.repo);
+    if (next.symbol) {
+      params.set("symbol", next.symbol);
+      if (next.symbolKind !== "all") params.set("symbolKind", next.symbolKind);
+    }
+    if (next.tab === "symbols" && next.search) params.set("search", next.search);
+    if (next.tab === "data") params.set("table", next.table);
+    const sort =
+      next.tab === "repos" ? next.reposSort : next.tab === "symbols" ? next.symbolsSort : null;
+    if (sort) params.set("sort", `${sort.key}:${sort.dir}`);
+    const query = params.toString();
+    return `#${next.tab}${query ? `?${query}` : ""}`;
+  };
 
-  function parseLine(text, file, lineNo) {
-    if (text.trim() === "") return;
-    let record;
+  const navigate = (changes, replace = false) => {
+    const hash = hashFor(changes);
+    if (hash === location.hash) return;
+    if (replace) history.replaceState(null, "", hash);
+    else history.pushState(null, "", hash);
+    onRoute();
+  };
+
+  // ------------------------------------------------------------------
+  // API
+  // ------------------------------------------------------------------
+
+  const filterParams = () => {
+    const params = {};
+    for (const [key, value] of Object.entries(state.filters))
+      if (value !== "" && value !== defaults[key]) params[key] = value;
+    return params;
+  };
+
+  const api = async (path, params = {}) => {
+    const url = `/api/${path}?${new URLSearchParams(params)}`;
+    const response = await fetch(url);
+    const body = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+    if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+    return body;
+  };
+
+  // ------------------------------------------------------------------
+  // Views
+  // ------------------------------------------------------------------
+
+  const view = document.getElementById("view");
+  let renderToken = 0;
+
+  /** Renders a view, keeping the previous frame (dimmed) until the new one is ready. */
+  const renderView = async () => {
+    const token = ++renderToken;
+    view.classList.add("loading");
     try {
-      record = JSON.parse(text);
+      const content = await { overview, repos, symbols, data }[state.tab]();
+      if (token !== renderToken) return;
+      view.replaceChildren(content);
     } catch (error) {
-      state.problems.push({ file, line: lineNo, text: `not JSON: ${error.message}` });
-      return;
+      if (token !== renderToken) return;
+      view.replaceChildren(
+        h("p", { class: "error" }, `Could not load this view: ${error.message}`),
+      );
+    } finally {
+      if (token === renderToken) view.classList.remove("loading");
     }
-    if (record === null || typeof record !== "object" || Array.isArray(record)) {
-      state.problems.push({ file, line: lineNo, text: "not a JSON object" });
-      return;
-    }
-    state.rows.push({
-      type: Viz.detectRecordType(record),
-      file: file,
-      line: lineNo,
-      record,
-      derived: deriveRow(record),
-    });
-  }
+  };
 
-  function loadText(text, fileName) {
-    text.split(/\r?\n/).forEach((line, index) => parseLine(line, fileName, index + 1));
-    if (!state.files.includes(fileName)) state.files.push(fileName);
-    render();
-  }
-
-  function loadFiles(fileList) {
-    for (const file of fileList) {
-      const reader = new FileReader();
-      reader.onload = () => {
-        loadText(String(reader.result), file.name);
-      };
-      reader.readAsText(file);
-    }
-  }
-
-  // Programmatic entry point: also used for testing and embedding. The
-  // visible API surface for extensions is documented in README.md.
-  Viz.loadText = loadText;
-  Viz.state = state;
-
-  // ------------------------------------------------------------------
-  // Filtering / sorting
-  // ------------------------------------------------------------------
-
-  function filteredRows() {
-    const query = state.search.trim().toLowerCase();
-    return state.rows.filter((row) => {
-      if (state.type !== "all" && row.type !== state.type) return false;
-      if (state.status !== "all" && row.record.cloneStatus !== state.status) return false;
-      if (state.adopter !== "all") {
-        if (row.record.adopter === undefined) return false;
-        if (Boolean(row.record.adopter) !== (state.adopter === "yes")) return false;
-      }
-      if (state.signals.size > 0) {
-        const tags = (row.record.signals || []).map((signal) => signal._tag);
-        if (!tags.some((tag) => state.signals.has(tag))) return false;
-      }
-      if (query !== "" && !row.derived.search.includes(query)) return false;
-      return true;
-    });
-  }
-
-  // ------------------------------------------------------------------
-  // Aggregation (EXTENSION POINT: add counters here)
-  // ------------------------------------------------------------------
-
-  function aggregate(rows) {
-    const byType = {};
-    const byStatus = {};
-    const bySignal = {};
-    let adopters = 0;
-    for (const row of rows) {
-      byType[row.type] = (byType[row.type] || 0) + 1;
-      const status = row.record.cloneStatus;
-      if (status !== undefined) byStatus[status] = (byStatus[status] || 0) + 1;
-      if (row.derived.adopter) adopters += 1;
-      for (const signal of row.record.signals || []) {
-        const tag = signal._tag || "signal";
-        bySignal[tag] = (bySignal[tag] || 0) + 1;
-      }
-    }
-
-    // Population and effect-usage counters. Records are appended across
-    // runs, so they are deduped per record type (last record wins, like the
-    // pipeline's own state files) before counting; the same repository
-    // legitimately has one record per state file.
-    const latest = new Map();
-    for (const row of rows) {
-      if (row.record.repoId !== undefined) {
-        latest.set(`${row.type}:${row.record.repoId}`, row);
-      }
-    }
-
-    const usage = {
-      analyzedRepos: 0,
-      cloneFailures: 0,
-      adopters: 0,
-      analyzedAdopters: 0,
-      withCodeUsage: 0,
-      tsSource: 0,
-      tsTest: 0,
-      effectFiles: 0,
-      effectImports: 0,
-    };
-    const packages = {};
-    const symbols = new Map();
-    const importBins = new Array(IMPORT_BINS.length).fill(0);
-    const depth = [];
-
-    for (const row of latest.values()) {
-      const derived = row.derived;
-      if (row.record.cloneStatus !== undefined) {
-        if (derived.cloned) usage.analyzedRepos += 1;
-        else usage.cloneFailures += 1;
-        if (derived.adopter) usage.adopters += 1;
-      }
-      if (row.record.analysisStatus === undefined) continue;
-
-      if (derived.analyzed) {
-        usage.analyzedAdopters += 1;
-        if (derived.effectFiles > 0) usage.withCodeUsage += 1;
-      }
-      usage.tsSource += derived.tsSource;
-      usage.tsTest += derived.tsTest;
-      usage.effectFiles += derived.effectFiles;
-      usage.effectImports += derived.effectImports;
-
-      for (const name of derived.packages) {
-        packages[name] = (packages[name] || 0) + 1;
-      }
-      if (derived.symbols) {
-        for (const [symbol, count] of derived.symbols) {
-          symbols.set(symbol, (symbols.get(symbol) || 0) + count);
-        }
-      }
-      if (derived.importBins) {
-        derived.importBins.forEach((count, index) => {
-          importBins[index] += count;
-        });
-      }
-      if (derived.tsTotal > 0 && derived.effectFiles > 0) {
-        depth.push({
-          label: row.record.fullName || `repo ${row.record.repoId}`,
-          value: (derived.effectFiles / derived.tsTotal) * 100,
-          hint: `${derived.effectFiles} of ${derived.tsTotal} TypeScript files use Effect`,
-        });
-      }
-    }
-
-    // Population ratios over runs, from the run-summary records. Labels are
-    // unique even for several runs on the same day (they collapse otherwise).
-    const seenAt = new Map();
-    const runs = rows
-      .filter((row) => row.record.population !== undefined && row.record.deepAnalysis !== undefined)
-      .map((row) => {
-        const stamp = String(row.record.recordedAt || "");
-        const base = stamp.slice(5, 16).replace("T", " ") || "run";
-        const seen = (seenAt.get(base) || 0) + 1;
-        seenAt.set(base, seen);
-        return {
-          at: seen > 1 ? `${base} #${seen}` : base,
-          adopterRatio: Number(row.record.population.adopterRatio) || 0,
-          codeUsageRatio: Number(row.record.deepAnalysis.codeUsageRatio) || 0,
-        };
-      })
-      .sort((left, right) => (left.at < right.at ? -1 : left.at > right.at ? 1 : 0));
-
-    return {
-      byType,
-      byStatus,
-      bySignal,
-      adopters,
-      usage,
-      packages,
-      symbols,
-      importBins,
-      depth,
-      runs,
-    };
-  }
-
-  // ------------------------------------------------------------------
-  // Rendering
-  // ------------------------------------------------------------------
-
-  const escapeHtml = (value) =>
-    String(value).replace(
-      /[&<>"']/g,
-      (char) =>
-        ({
-          "&": "&amp;",
-          "<": "&lt;",
-          ">": "&gt;",
-          '"': "&quot;",
-          "'": "&#39;",
-        })[char],
+  const sectionHead = (title, note) =>
+    h(
+      "div",
+      { class: "section-head" },
+      h("h2", null, title),
+      note ? h("span", { class: "note" }, note) : null,
     );
 
-  function render() {
-    const rows = filteredRows();
-    document.body.classList.toggle("is-empty", state.rows.length === 0);
-    renderStats(rows);
-    renderCharts(rows);
-    renderSignalFilters();
-    renderTables(rows);
-    renderProblems();
-    renderFileSummary();
-  }
-
-  function renderFileSummary() {
-    const container = document.getElementById("file-summary");
-    if (state.files.length === 0) {
-      container.innerHTML = "";
-      return;
-    }
-    container.innerHTML =
-      `Loaded <b>${state.files.length}</b> file${state.files.length === 1 ? "" : "s"} · ` +
-      `<b>${state.rows.length}</b> records` +
-      (state.problems.length > 0 ? ` · <b>${state.problems.length}</b> skipped lines` : "");
-  }
-
-  function renderStats(rows) {
-    const summary = aggregate(rows);
-    const ratio = (part, total) => (total === 0 ? "0.0%" : `${((part / total) * 100).toFixed(1)}%`);
-    const cells = [
-      ["files", state.files.length],
-      ["records", state.rows.length],
-      ["matching", rows.length],
-      ["adopters", summary.adopters],
-    ];
-    for (const [status, count] of Object.entries(summary.byStatus)) cells.push([status, count]);
-    for (const [tag, count] of Object.entries(summary.bySignal)) cells.push([tag, count]);
-
-    const usage = summary.usage;
-    if (usage.analyzedRepos > 0) {
-      cells.push(["adopter ratio", ratio(usage.adopters, usage.analyzedRepos)]);
-    }
-    if (usage.analyzedAdopters > 0) {
-      cells.push(["analysed for usage", usage.analyzedAdopters]);
-      cells.push(["with code usage", ratio(usage.withCodeUsage, usage.analyzedAdopters)]);
-    }
-    if (usage.tsSource + usage.tsTest > 0) {
-      cells.push(["ts files (src/test)", `${usage.tsSource} / ${usage.tsTest}`]);
-    }
-    if (usage.effectFiles > 0) {
-      cells.push(["effect files", usage.effectFiles]);
-      cells.push(["effect imports", usage.effectImports]);
-    }
-
-    const packageEntries = Object.entries(summary.packages).sort(
-      (a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])),
+  const kpi = (value, label, sub, unit) =>
+    h(
+      "div",
+      { class: "kpi" },
+      h("div", { class: "value" }, value, unit ? h("small", null, unit) : null),
+      h("div", { class: "label" }, label),
+      sub ? h("div", { class: "sub" }, sub) : null,
     );
-    const packageHtml =
-      packageEntries.length === 0
-        ? ""
-        : `<div class="stat-row"><div class="stat stat-wide"><span>effect packages (repos)</span><b>${packageEntries
-            .slice(0, 12)
-            .map(([name, count]) => `${escapeHtml(name)} (${count})`)
-            .join(" · ")}</b></div></div>`;
 
-    document.getElementById("stats").innerHTML =
-      `<h2>Summary</h2><div class="stat-row">` +
-      cells
-        .map(
-          ([label, value]) =>
-            `<div class="stat"><b>${escapeHtml(value)}</b><span>${escapeHtml(label)}</span></div>`,
-        )
-        .join("") +
-      `</div>` +
-      packageHtml;
-  }
+  // ---- overview ----
 
-  function renderCharts(rows) {
-    const summary = aggregate(rows);
-    const grid = document.getElementById("charts-grid");
-    const card = (id) => `<div class="chart-card" id="chart-${id}"></div>`;
+  async function overview() {
+    const [o, meta] = await Promise.all([
+      api("overview", filterParams()),
+      state.meta ? Promise.resolve(state.meta) : api("meta"),
+    ]);
+    const c = o.counts;
+    const files = roleLabel[state.filters.role];
 
-    grid.innerHTML = ["population", "trend", "imports", "packages", "symbols", "depth"]
-      .map(card)
-      .join("");
+    if (c.processed === 0) {
+      return h(
+        "div",
+        null,
+        sectionHead("Nothing to show yet"),
+        h(
+          "p",
+          { class: "note" },
+          "No processed repository matches the filters. Run `e20r run` to fill the database, or relax the filters.",
+        ),
+      );
+    }
 
-    const usage = summary.usage;
+    const kpis = h(
+      "div",
+      { class: "kpis" },
+      kpi(
+        int(c.probed),
+        "repositories probed",
+        c.failed > 0 ? `${int(c.failed)} failed to process` : "top TypeScript repos by stars",
+      ),
+      kpi(
+        int(c.adopters),
+        "Effect adopters",
+        "runtime dependency on effect",
+        pct(o.ratios.adopters),
+      ),
+      kpi(
+        int(c.analyzed),
+        "deep-analyzed",
+        `${int(c.excluded)} excluded · ${int(c.selected)} awaiting`,
+      ),
+      kpi(
+        pct(o.ratios.codeUsage),
+        "import Effect in code",
+        `${int(c.withCodeUsage)} of ${int(c.analyzed)} analyzed adopters`,
+      ),
+      kpi(
+        pct(o.ratios.effectFiles),
+        `of ${files} use Effect`,
+        `${int(c.effectFiles)} of ${int(c.tsFiles)} in analyzed repos`,
+      ),
+      kpi(
+        pct(o.ratios.effectLoc),
+        "of lines in those files",
+        `${compact(c.effectLoc)} of ${compact(c.loc)} non-blank lines`,
+      ),
+    );
 
-    Viz.charts.bars(document.getElementById("chart-population"), {
-      title: "Population",
-      subtitle: "repositories in the loaded records (latest per repo)",
+    const funnel = charts.bars({
+      title: "Adoption funnel",
+      subtitle: "each stage as a share of the previous one · click to filter",
       rows: [
-        { label: "analysed", value: usage.analyzedRepos },
-        { label: "effect adopters", value: usage.adopters },
-        { label: "with code usage", value: usage.withCodeUsage },
-      ].filter((row) => row.value > 0),
-    });
-
-    Viz.charts.trend(document.getElementById("chart-trend"), {
-      title: "Adoption over runs",
-      subtitle: "ratios recorded per run in run-summary.jsonl",
-      series: [
+        { label: "probed", value: c.probed, display: int(c.probed), status: "processed" },
         {
-          label: "adopters / analysed",
-          points: summary.runs.map((run) => ({ x: run.at, y: run.adopterRatio })),
+          label: "adopters",
+          value: c.adopters,
+          display: `${int(c.adopters)} · ${pct(share(c.adopters, c.probed))}`,
+          status: "adopters",
         },
         {
-          label: "code usage / adopters",
-          points: summary.runs.map((run) => ({ x: run.at, y: run.codeUsageRatio })),
+          label: "deep-analyzed",
+          value: c.analyzed,
+          display: `${int(c.analyzed)} · ${pct(share(c.analyzed, c.adopters))}`,
+          status: "analyzed",
+        },
+        {
+          label: "Effect in code",
+          value: c.withCodeUsage,
+          display: `${int(c.withCodeUsage)} · ${pct(share(c.withCodeUsage, c.analyzed))}`,
+          status: "analyzed",
+        },
+      ].map((row) => ({
+        ...row,
+        onClick: () => navigate({ filters: { ...state.filters, status: row.status } }),
+      })),
+    });
+
+    const popularity = charts.bars({
+      title: "Adoption by popularity",
+      subtitle: "adopter rate in five equal-size star bands",
+      rows: o.popularity.map((band) => ({
+        label: band.label,
+        value: band.rate,
+        display: pct(band.rate),
+        tip: {
+          value: pct(band.rate),
+          label: `${band.adopters} of ${band.repos} repositories adopt Effect`,
+        },
+      })),
+    });
+
+    const declared = o.declaration.runtime + o.declaration.peer + o.declaration.dev;
+    const declaration = charts.bars({
+      title: "How effect is declared",
+      subtitle: "repos with any effect dependency · only runtime counts as adoption",
+      empty: "No manifest declares effect.",
+      rows: [
+        { label: "dependencies", value: o.declaration.runtime },
+        { label: "peer only", value: o.declaration.peer },
+        { label: "dev only", value: o.declaration.dev },
+      ]
+        .filter(() => declared > 0)
+        .map((row) => ({
+          ...row,
+          display: `${int(row.value)} · ${pct(share(row.value, declared))}`,
+        })),
+    });
+
+    const versions = charts.bars({
+      title: "Effect major version",
+      subtitle: "adopters by the highest major they pin (catalogs resolved)",
+      empty: "No adopter in the current filters.",
+      rows: o.versions.map((row) => ({
+        label: row.label,
+        value: row.repos,
+        display: int(row.repos),
+        tip: { value: `${int(row.repos)} repositories`, label: row.label },
+      })),
+    });
+
+    const analyzedNote = `analyzed repos · ${files}`;
+    const packages = charts.bars({
+      title: "Effect packages",
+      subtitle: `repositories importing each package · ${analyzedNote}`,
+      empty: "No Effect import in the current filters.",
+      rows: o.packages.map((row) => ({
+        label: row.package,
+        value: row.repos,
+        display: `${int(row.repos)}`,
+        tip: {
+          value: `${int(row.repos)} repositories`,
+          label: `${row.package} · ${int(row.files)} files`,
+        },
+      })),
+    });
+
+    const kindNote = state.filters.kind === "all" ? "any position" : state.filters.kind;
+    const symbolsChart = charts.bars({
+      title: "Most widespread symbols",
+      subtitle: `repositories using each symbol (${kindNote}) · click for the repositories`,
+      empty: "No symbol usage in the current filters.",
+      rows: o.symbols.map((row) => ({
+        label: row.symbol,
+        value: row.repos,
+        display: int(row.repos),
+        tip: {
+          value: `${int(row.repos)} repositories`,
+          label: `${row.symbol} · ${int(row.usages)} usages in ${int(row.files)} files`,
+        },
+        onClick: () => navigate({ symbol: row.symbol, symbolKind: state.filters.kind }),
+      })),
+    });
+
+    const depth = charts.bars({
+      title: "Adoption depth",
+      subtitle: `share of ${files} importing Effect, per repository · click for details`,
+      empty: "No analyzed repository imports Effect.",
+      max: Math.max(...o.depth.map((row) => row.fileShare), 0),
+      rows: o.depth.map((row) => ({
+        label: row.fullName,
+        value: row.fileShare,
+        display: pct(row.fileShare),
+        tip: {
+          value: pct(row.fileShare),
+          label: `${int(row.effectFiles)} of ${int(row.tsFiles)} files · ${pct(row.locShare)} of lines`,
+        },
+        onClick: () => navigate({ repo: String(row.repoId) }),
+      })),
+    });
+
+    const roleUsages = o.byRole.reduce((sum, row) => sum + row.usages, 0);
+    const byRole = charts.bars({
+      title: "Where Effect lives",
+      subtitle: `share of symbol usages by file role (${kindNote}) · not scoped by the Code filter · click to filter`,
+      empty: "No analyzed repository in the current filters.",
+      max: 1,
+      rows: o.byRole.map((row) => ({
+        label: roleName[row.role] || row.role,
+        value: share(row.usages, roleUsages),
+        display: pct(share(row.usages, roleUsages)),
+        tip: {
+          value: `${int(row.usages)} usages`,
+          label: `${int(row.effectFiles)} of ${int(row.files)} ${roleName[row.role] || row.role} files import Effect (${pct(share(row.effectFiles, row.files))})`,
+        },
+        onClick: () => navigate({ filters: { ...state.filters, role: row.role } }),
+      })),
+    });
+
+    const totalFiles = o.histogram.reduce((sum, bin) => sum + bin.files, 0);
+    const histogram = charts.columns({
+      title: "Effect imports per file",
+      subtitle: `distribution over ${int(totalFiles)} Effect-using files`,
+      bins: o.histogram.map((bin) => ({
+        label: bin.label,
+        value: bin.files,
+        display: compact(bin.files),
+        tip: {
+          value: `${int(bin.files)} files`,
+          label: `${bin.label} Effect import${bin.label === "1" ? "" : "s"} · ${pct(share(bin.files, totalFiles))}`,
+        },
+      })),
+    });
+
+    const runs = meta.runs.filter((run) => run.adopterRatio !== null);
+    const trend = charts.trend({
+      title: "Ratios over runs",
+      subtitle: "whole population as recorded at the end of each run (not filtered)",
+      empty: "Needs at least two finished runs.",
+      format: (value) => pct(value, 0),
+      series: [
+        {
+          label: "adopters / probed",
+          className: "series-1",
+          points: runs.map((run) => ({
+            x: `#${run.id} ${run.startedAt.slice(5, 10)}`,
+            y: run.adopterRatio,
+          })),
+        },
+        {
+          label: "Effect in code / analyzed",
+          className: "series-2",
+          points: runs.map((run) => ({
+            x: `#${run.id} ${run.startedAt.slice(5, 10)}`,
+            y: run.codeUsageRatio ?? 0,
+          })),
         },
       ],
     });
 
-    Viz.charts.histogram(document.getElementById("chart-imports"), {
-      title: "Effect imports per file",
-      subtitle: "distribution across effect-using files",
-      bins: IMPORT_BINS.map((bin, index) => ({
-        label: bin.label,
-        count: summary.importBins[index],
-      })),
-    });
-
-    Viz.charts.bars(document.getElementById("chart-packages"), {
-      title: "Effect packages",
-      subtitle: "number of analysed repositories using each package",
-      rows: Object.entries(summary.packages)
-        .map(([label, value]) => ({ label, value }))
-        .sort((a, b) => b.value - a.value || a.label.localeCompare(b.label))
-        .slice(0, 10),
-    });
-
-    Viz.charts.bars(document.getElementById("chart-symbols"), {
-      title: "Most used Effect symbols",
-      subtitle: "AST-counted usages across analysed repositories",
-      rows: [...summary.symbols.entries()]
-        .map(([label, value]) => ({ label, value }))
-        .sort((a, b) => b.value - a.value || a.label.localeCompare(b.label))
-        .slice(0, 10),
-    });
-
-    Viz.charts.bars(document.getElementById("chart-depth"), {
-      title: "Adoption depth per repository",
-      subtitle: "share of TypeScript files importing Effect",
-      format: (value) => `${value.toFixed(1)}%`,
-      rows: summary.depth.sort((a, b) => b.value - a.value).slice(0, 10),
-    });
+    return h(
+      "div",
+      null,
+      kpis,
+      sectionHead("Who adopts Effect"),
+      h("div", { class: "grid quad" }, funnel, popularity, declaration, versions),
+      sectionHead("How deeply", `per-file metrics count ${files}`),
+      h("div", { class: "grid" }, depth, h("div", { class: "stack" }, byRole, histogram)),
+      sectionHead("What they use"),
+      h("div", { class: "grid" }, packages, symbolsChart),
+      sectionHead("Over time"),
+      h("div", { class: "grid" }, trend, runsTable(meta.runs)),
+    );
   }
 
-  function renderSignalFilters() {
-    const present = new Set();
-    for (const row of state.rows) {
-      for (const signal of row.record.signals || []) present.add(signal._tag || "signal");
-    }
-    const container = document.getElementById("signal-filters");
-    if (present.size === 0) {
-      container.innerHTML = "";
-      return;
-    }
-    container.innerHTML =
-      `<span class="filter-label">Signals:</span>` +
-      [...present]
-        .sort()
-        .map((tag) => {
-          const definition = Viz.signalTags.get(tag);
-          const label = definition ? definition.label : tag;
-          const checked = state.signals.has(tag) ? "checked" : "";
-          return `<label class="chip"><input type="checkbox" data-signal="${escapeHtml(tag)}" ${checked}/> ${escapeHtml(label)}</label>`;
-        })
-        .join("");
+  /** Every run, finished or not: the table view of the trend. */
+  const runsTable = (runs) =>
+    charts.card(
+      { title: "Runs", subtitle: "an unfinished run was interrupted (or is still going)" },
+      runs.length === 0
+        ? charts.empty("No run recorded.")
+        : h(
+            "div",
+            { class: "table-wrap" },
+            table({
+              columns: [
+                { label: "#", num: true, cell: (r) => r.id },
+                { label: "Command", cell: (r) => r.command },
+                { label: "Started", cell: (r) => r.startedAt.replace("T", " ").slice(0, 16) },
+                {
+                  label: "Finished",
+                  cell: (r) =>
+                    r.finishedAt ? ago(r.finishedAt) : h("span", { class: "muted" }, "unfinished"),
+                },
+                { label: "Probed", num: true, cell: (r) => int(r.probed) },
+                { label: "Adopters", num: true, cell: (r) => pct(r.adopterRatio) },
+                { label: "In code", num: true, cell: (r) => pct(r.codeUsageRatio) },
+              ],
+              rows: [...runs].reverse(),
+            }),
+          ),
+    );
+
+  // ---- sortable, pageable tables ----
+
+  /**
+   * A table over server-sorted rows: `columns: [{ key, label, num?, sort?,
+   * cell(row) }]`; `sort` names the server sort key.
+   */
+  const table = ({ columns, rows, sort, onSort, onRow, rowLabel }) =>
+    h(
+      "table",
+      null,
+      h(
+        "thead",
+        null,
+        h(
+          "tr",
+          null,
+          columns.map((column) => {
+            const active = sort && column.sort === sort.key;
+            return h(
+              "th",
+              {
+                class:
+                  [column.num ? "num" : "", column.sort ? "sortable" : ""].join(" ").trim() ||
+                  undefined,
+                "aria-sort": active ? (sort.dir === "asc" ? "ascending" : "descending") : undefined,
+                tabindex: column.sort ? "0" : undefined,
+                onClick: column.sort ? () => onSort(column.sort) : undefined,
+                onKeydown: column.sort
+                  ? (event) => event.key === "Enter" && onSort(column.sort)
+                  : undefined,
+              },
+              column.label,
+              active ? (sort.dir === "asc" ? " ↑" : " ↓") : "",
+            );
+          }),
+        ),
+      ),
+      h(
+        "tbody",
+        null,
+        rows.map((row) =>
+          h(
+            "tr",
+            onRow
+              ? {
+                  class: "clickable",
+                  tabindex: "0",
+                  "aria-label": rowLabel ? rowLabel(row) : undefined,
+                  onClick: () => onRow(row),
+                  onKeydown: (event) => event.key === "Enter" && onRow(row),
+                }
+              : null,
+            columns.map((column) =>
+              h("td", { class: column.num ? "num" : column.className }, column.cell(row)),
+            ),
+          ),
+        ),
+      ),
+    );
+
+  const cellBar = (value) =>
+    h(
+      "span",
+      { class: "cell-bar" },
+      h("i", { style: `width:${Math.min(100, (value || 0) * 100).toFixed(1)}%` }),
+    );
+
+  const toggleSort = (current, key) =>
+    current.key === key
+      ? { key, dir: current.dir === "asc" ? "desc" : "asc" }
+      : { key, dir: key === "name" || key === "symbol" ? "asc" : "desc" };
+
+  /** A paged table whose "Show more" appends the next page in place. */
+  const pagedTable = async ({ load, pageSize, render }) => {
+    let offset = 0;
+    const first = await load(0);
+    const rows = [...first.rows];
+    const wrap = h("div", { class: "table-wrap" });
+    const foot = h("div", { class: "table-foot" });
+    const draw = () => {
+      wrap.replaceChildren(render(rows), foot);
+      foot.replaceChildren(
+        h("span", null, `Showing ${int(rows.length)} of ${int(first.total)}`),
+        rows.length < first.total
+          ? h(
+              "button",
+              {
+                type: "button",
+                onClick: async (event) => {
+                  event.target.disabled = true;
+                  offset += pageSize;
+                  const next = await load(offset);
+                  rows.push(...next.rows);
+                  draw();
+                },
+              },
+              "Show more",
+            )
+          : "",
+      );
+    };
+    draw();
+    return { element: wrap, total: first.total, extra: first };
+  };
+
+  // ---- repositories ----
+
+  async function repos() {
+    const pageSize = 100;
+    const sort = state.reposSort;
+    const files = roleLabel[state.filters.role];
+    const columns = [
+      { label: "Repository", sort: "name", cell: (r) => r.fullName },
+      { label: "★", num: true, sort: "stars", cell: (r) => compact(r.stars) },
+      { label: "Status", sort: "status", cell: (r) => badge(r.status) },
+      { label: "effect", cell: (r) => h("span", { class: "mono" }, r.effectSpecs || "") },
+      { label: "TS files", num: true, sort: "tsFiles", cell: (r) => int(r.tsFiles) },
+      {
+        label: "Effect files",
+        num: true,
+        sort: "effectFiles",
+        cell: (r) => (r.status === "analyzed" ? int(r.effectFiles) : ""),
+      },
+      {
+        label: "Depth",
+        sort: "depth",
+        cell: (r) => (r.depth === null ? "" : [cellBar(r.depth), pct(r.depth)]),
+      },
+      {
+        label: "Effect lines",
+        num: true,
+        sort: "locShare",
+        cell: (r) => (r.locShare === null ? "" : pct(r.locShare)),
+      },
+      {
+        label: "Effect packages",
+        num: true,
+        sort: "packages",
+        cell: (r) => (r.status === "analyzed" ? int(r.effectPackages) : ""),
+      },
+      { label: "Updated", sort: "updated", cell: (r) => ago(r.updatedAt) },
+    ];
+    const paged = await pagedTable({
+      pageSize,
+      load: (offset) =>
+        api("repos", { ...filterParams(), sort: sort.key, dir: sort.dir, limit: pageSize, offset }),
+      render: (rows) =>
+        table({
+          columns,
+          rows,
+          sort,
+          onSort: (key) => navigate({ reposSort: toggleSort(sort, key) }, true),
+          onRow: (row) => navigate({ repo: String(row.repoId) }),
+          rowLabel: (row) => `Open ${row.fullName}`,
+        }),
+    });
+    return h(
+      "div",
+      null,
+      sectionHead("Repositories", `${int(paged.total)} match · file columns count ${files}`),
+      paged.element,
+    );
   }
 
-  function renderTables(rows) {
-    const byType = new Map();
+  // ---- symbols ----
+
+  async function symbols() {
+    const pageSize = 100;
+    const sort = state.symbolsSort;
+    let analyzedRepos = 0;
+    const columns = [
+      { label: "Symbol", sort: "symbol", cell: (r) => h("span", { class: "mono" }, r.symbol) },
+      { label: "Position", cell: (r) => r.kind },
+      {
+        label: "Repositories",
+        sort: "repos",
+        cell: (r) => [
+          cellBar(share(r.repos, analyzedRepos)),
+          `${int(r.repos)} · ${pct(share(r.repos, analyzedRepos), 0)}`,
+        ],
+      },
+      { label: "Files", num: true, sort: "files", cell: (r) => int(r.files) },
+      { label: "Usages", num: true, sort: "usages", cell: (r) => int(r.usages) },
+    ];
+    const paged = await pagedTable({
+      pageSize,
+      load: async (offset) => {
+        const page = await api("symbols", {
+          ...filterParams(),
+          search: state.search,
+          sort: sort.key,
+          dir: sort.dir,
+          limit: pageSize,
+          offset,
+        });
+        analyzedRepos = page.analyzedRepos;
+        return page;
+      },
+      render: (rows) =>
+        table({
+          columns,
+          rows,
+          sort,
+          onSort: (key) => navigate({ symbolsSort: toggleSort(sort, key) }, true),
+          onRow: (row) => navigate({ symbol: row.symbol, symbolKind: row.kind }),
+          rowLabel: (row) => `Repositories using ${row.symbol}`,
+        }),
+    });
+
+    const search = h("input", {
+      type: "search",
+      placeholder: "Effect.gen, Schema., Layer…",
+      value: state.search,
+      "aria-label": "Search symbols",
+      onInput: debounce((event) => navigate({ search: event.target.value.trim() }, true), 250),
+    });
+    return h(
+      "div",
+      null,
+      sectionHead(
+        "Symbols",
+        `${int(paged.total)} symbol × position pairs in ${int(analyzedRepos)} analyzed repos · ${roleLabel[state.filters.role]}`,
+      ),
+      h(
+        "div",
+        { class: "filters", style: "padding:0 0 10px;border:none;background:none" },
+        h("label", { class: "field grow" }, h("span", null, "Symbol"), search),
+      ),
+      paged.element,
+    );
+  }
+
+  // ---- data browser ----
+
+  async function data() {
+    const meta = state.meta || (await api("meta"));
+    const pageSize = 100;
+    const list = h(
+      "nav",
+      { class: "table-list", "aria-label": "Tables" },
+      meta.tables.map((entry) =>
+        h(
+          "button",
+          {
+            type: "button",
+            "aria-current": entry.name === state.table ? "true" : undefined,
+            onClick: () => navigate({ table: entry.name }, true),
+          },
+          h("span", null, entry.name),
+          h("span", { class: "count" }, compact(entry.rows)),
+        ),
+      ),
+    );
+    const cellText = (value) => {
+      if (value === null || value === undefined) return "";
+      if (typeof value === "object") return JSON.stringify(value);
+      return String(value);
+    };
+    const paged = await pagedTable({
+      pageSize,
+      load: (offset) => api("table", { name: state.table, limit: pageSize, offset }),
+      render: (rows) => {
+        const keys = [...new Set(rows.flatMap((row) => Object.keys(row)))];
+        return table({
+          columns: keys.map((key) => ({
+            label: key,
+            num: rows.every((row) => row[key] === null || typeof row[key] === "number"),
+            className: "json",
+            cell: (row) =>
+              h(
+                "span",
+                { title: cellText(row[key]).slice(0, 2000) },
+                cellText(row[key]).slice(0, 200),
+              ),
+          })),
+          rows,
+        });
+      },
+    });
+    return h(
+      "div",
+      null,
+      sectionHead(
+        "Data",
+        "raw rows of the state database (read-only); the schema lives in src/store/migrations.ts",
+      ),
+      h(
+        "div",
+        { class: "data-layout" },
+        list,
+        h(
+          "div",
+          null,
+          h("h3", { class: "mono", style: "margin-bottom:8px" }, state.table),
+          paged.element,
+        ),
+      ),
+    );
+  }
+
+  // ------------------------------------------------------------------
+  // Drawer: repository and symbol details
+  // ------------------------------------------------------------------
+
+  const drawer = document.getElementById("drawer");
+  const drawerTitle = document.getElementById("drawer-title");
+  const drawerBody = document.getElementById("drawer-body");
+  const scrim = document.getElementById("scrim");
+  let drawerKey = null;
+  let lastFocus = null;
+
+  const closeDrawer = () => navigate({ repo: null, symbol: null, symbolKind: "all" });
+
+  const showDrawer = (title, body) => {
+    if (drawer.hidden) lastFocus = document.activeElement;
+    drawerTitle.textContent = title;
+    drawerBody.replaceChildren(body);
+    drawer.hidden = false;
+    scrim.hidden = false;
+    document.getElementById("drawer-close").focus({ preventScroll: true });
+  };
+
+  const hideDrawer = () => {
+    if (drawer.hidden) return;
+    drawer.hidden = true;
+    scrim.hidden = true;
+    drawerKey = null;
+    if (lastFocus && document.contains(lastFocus)) lastFocus.focus({ preventScroll: true });
+  };
+
+  const renderDrawer = async (force = false) => {
+    const key = state.repo
+      ? `repo:${state.repo}:${JSON.stringify(state.filters)}`
+      : state.symbol
+        ? `symbol:${state.symbol}:${state.symbolKind}:${JSON.stringify(state.filters)}`
+        : null;
+    if (key === null) return hideDrawer();
+    if (key === drawerKey && !force) return;
+    drawerKey = key;
+    if (drawer.hidden)
+      showDrawer(state.repo ? "Loading…" : state.symbol, h("p", { class: "muted" }, "Loading…"));
+    try {
+      if (state.repo) await repoDrawer(state.repo, key);
+      else await symbolDrawer(state.symbol, state.symbolKind, key);
+    } catch (error) {
+      if (drawerKey === key) showDrawer("Error", h("p", { class: "error" }, error.message));
+    }
+  };
+
+  async function repoDrawer(id, key) {
+    const detail = await api("repo", { ...filterParams(), id });
+    if (drawerKey !== key) return;
+    const repo = detail.state;
+    const files = roleLabel[state.filters.role];
+    const totals = detail.totals.reduce(
+      (sum, row) => ({
+        files: sum.files + (row.files || 0),
+        effectFiles: sum.effectFiles + (row.effectFiles || 0),
+        loc: sum.loc + (row.loc || 0),
+        effectLoc: sum.effectLoc + (row.effectLoc || 0),
+        declarations: sum.declarations + (row.declarationFiles || 0),
+        generated: sum.generated + (row.role === "generated" ? row.files || 0 : 0),
+      }),
+      { files: 0, effectFiles: 0, loc: 0, effectLoc: 0, declarations: 0, generated: 0 },
+    );
+    const analyzed = repo.status === "analyzed";
+    const timings = repo.timings || {};
+
+    const facts = h(
+      "div",
+      { class: "facts" },
+      badge(repo.status),
+      repo.stars !== null ? h("span", null, h("b", null, `★ ${int(repo.stars)}`)) : null,
+      repo.language ? h("span", null, repo.language) : null,
+      repo.license ? h("span", null, repo.license) : null,
+      repo.commitSha
+        ? h(
+            "span",
+            null,
+            "commit ",
+            h(
+              "a",
+              {
+                href: `${githubUrl(repo)}/tree/${repo.commitSha}`,
+                target: "_blank",
+                rel: "noopener",
+              },
+              h("span", { class: "mono" }, repo.commitSha.slice(0, 10)),
+            ),
+          )
+        : null,
+      h(
+        "span",
+        null,
+        h("a", { href: githubUrl(repo), target: "_blank", rel: "noopener" }, "GitHub ↗"),
+      ),
+      h("span", { class: "muted" }, `updated ${ago(repo.updatedAt)}`),
+    );
+
+    const callouts = [
+      repo.status === "excluded"
+        ? h(
+            "div",
+            { class: "callout" },
+            h("b", null, "Excluded from the deep analysis. "),
+            exclusionText[repo.excludedReason] || repo.excludedReason,
+          )
+        : null,
+      repo.status === "failed"
+        ? h(
+            "div",
+            { class: "callout critical" },
+            h("b", null, `Failed at ${repo.errorStage} (attempt ${repo.attempts}). `),
+            h("span", { class: "mono" }, repo.error),
+          )
+        : null,
+      repo.status === "selected"
+        ? h(
+            "div",
+            { class: "callout" },
+            "Adopter awaiting deep analysis (processed with --skip-analysis, or interrupted).",
+          )
+        : null,
+    ];
+
+    const stageTimes = Object.entries(timings)
+      .map(([stage, millis]) => `${stage} ${seconds(millis)}`)
+      .join(" · ");
+
+    const kpis = h(
+      "div",
+      { class: "kpis", style: "margin-top:14px" },
+      kpi(
+        int(totals.files),
+        files,
+        `${totals.generated > 0 ? `${int(totals.generated)} generated · ` : ""}${int(totals.declarations)} declaration files · ${int(repo.manifestCount)} manifests`,
+      ),
+      analyzed
+        ? kpi(
+            pct(share(totals.effectFiles, totals.files)),
+            "import Effect",
+            `${int(totals.effectFiles)} files`,
+          )
+        : null,
+      analyzed
+        ? kpi(
+            pct(share(totals.effectLoc, totals.loc)),
+            "of lines",
+            `${compact(totals.effectLoc)} of ${compact(totals.loc)}`,
+          )
+        : null,
+    );
+
+    // One row per package, catalog references resolved; the full list of
+    // declarations stays one click away.
+    const resolveSpec = (spec) => {
+      if (!spec.startsWith("catalog:")) return spec;
+      const name = spec.slice("catalog:".length) || "default";
+      const entry = detail.catalogs.find((c) => c.catalog === name);
+      return entry ? `${entry.spec} (${spec})` : spec;
+    };
+    const byPackage = new Map();
+    for (const dep of detail.deps) {
+      const entry = byPackage.get(dep.package) || {
+        package: dep.package,
+        fields: new Set(),
+        specs: new Set(),
+        manifests: 0,
+      };
+      entry.fields.add(dep.field);
+      entry.specs.add(resolveSpec(dep.spec));
+      entry.manifests++;
+      byPackage.set(dep.package, entry);
+    }
+    const deps =
+      detail.deps.length === 0
+        ? null
+        : [
+            sectionHead(
+              "Effect dependencies",
+              `${byPackage.size} packages in ${int(detail.deps.length)} declarations`,
+            ),
+            h(
+              "div",
+              { class: "table-wrap" },
+              table({
+                columns: [
+                  { label: "Package", cell: (r) => h("span", { class: "mono" }, r.package) },
+                  { label: "Fields", cell: (r) => [...r.fields].join(", ") },
+                  {
+                    label: "Specs",
+                    className: "wrap",
+                    cell: (r) => h("span", { class: "mono" }, [...r.specs].join(", ")),
+                  },
+                  { label: "Manifests", num: true, cell: (r) => int(r.manifests) },
+                ],
+                rows: [...byPackage.values()],
+              }),
+            ),
+            h(
+              "details",
+              { class: "note", style: "margin-top:8px" },
+              h("summary", null, "Every declaration"),
+              h(
+                "div",
+                { class: "table-wrap", style: "margin-top:8px" },
+                table({
+                  columns: [
+                    { label: "Package", cell: (r) => h("span", { class: "mono" }, r.package) },
+                    { label: "Field", cell: (r) => r.field },
+                    { label: "Spec", cell: (r) => h("span", { class: "mono" }, r.spec) },
+                    {
+                      label: "Manifest",
+                      cell: (r) =>
+                        h(
+                          "a",
+                          {
+                            href: fileUrl(repo, r.manifest),
+                            target: "_blank",
+                            rel: "noopener",
+                            class: "mono",
+                          },
+                          r.manifest,
+                        ),
+                    },
+                  ],
+                  rows: detail.deps,
+                }),
+              ),
+            ),
+          ];
+
+    const managers =
+      detail.managers.length > 0
+        ? h(
+            "p",
+            { class: "note" },
+            `Package managers: ${detail.managers.map((m) => `${m.manager} (${m.evidence})`).join(" · ")}`,
+          )
+        : null;
+
+    const packages =
+      detail.packages.length === 0
+        ? null
+        : [
+            sectionHead("Workspace packages", `${int(detail.packages.length)} packages · ${files}`),
+            h(
+              "div",
+              { class: "table-wrap" },
+              table({
+                columns: [
+                  {
+                    label: "Directory",
+                    cell: (r) => h("span", { class: "mono" }, r.dir || "(root)"),
+                  },
+                  { label: "Name", cell: (r) => r.name || "" },
+                  { label: "effect dep", cell: (r) => r.effectDependency || "" },
+                  { label: "TS files", num: true, cell: (r) => int(r.tsFiles) },
+                  {
+                    label: "Effect files",
+                    num: true,
+                    cell: (r) => (analyzed ? int(r.effectFiles) : ""),
+                  },
+                  {
+                    label: "Depth",
+                    cell: (r) =>
+                      analyzed && r.tsFiles > 0
+                        ? [
+                            cellBar(share(r.effectFiles, r.tsFiles)),
+                            pct(share(r.effectFiles, r.tsFiles)),
+                          ]
+                        : "",
+                  },
+                ],
+                rows: detail.packages,
+              }),
+            ),
+          ];
+
+    const symbolsChart =
+      detail.symbols.length === 0
+        ? null
+        : charts.bars({
+            title: "Most used symbols",
+            subtitle: `usages in this repository · ${state.filters.kind === "all" ? "any position" : state.filters.kind}`,
+            rows: detail.symbols.slice(0, 15).map((row) => ({
+              label: `${row.symbol}${state.filters.kind === "all" ? ` (${row.kind})` : ""}`,
+              value: row.usages,
+              display: int(row.usages),
+              tip: {
+                value: `${int(row.usages)} usages`,
+                label: `${row.symbol} · ${row.kind} · ${int(row.files)} files`,
+              },
+              onClick: () => navigate({ repo: null, symbol: row.symbol, symbolKind: row.kind }),
+            })),
+          });
+
+    const imported =
+      detail.imported.length === 0
+        ? null
+        : charts.bars({
+            title: "Imported packages",
+            subtitle: "files importing each Effect package",
+            rows: detail.imported.map((row) => ({
+              label: row.package,
+              value: row.files,
+              display: int(row.files),
+              tip: {
+                value: `${int(row.files)} files`,
+                label: `${row.package} · ${int(row.imports)} imports`,
+              },
+            })),
+          });
+
+    const fileRows = detail.files.rows;
+    const filesTable =
+      fileRows.length === 0
+        ? null
+        : [
+            sectionHead(
+              "Effect files",
+              `${int(detail.files.total)} files${detail.files.total > fileRows.length ? `, top ${int(fileRows.length)} by symbol usages` : ""} · click to expand`,
+            ),
+            h("div", { class: "table-wrap" }, effectFilesTable(repo, fileRows)),
+          ];
+
+    showDrawer(
+      repo.fullName,
+      h(
+        "div",
+        null,
+        facts,
+        callouts,
+        kpis,
+        stageTimes ? h("p", { class: "note" }, `Stage timings: ${stageTimes}`) : null,
+        symbolsChart || imported
+          ? [sectionHead("Usage"), h("div", { class: "grid" }, symbolsChart, imported)]
+          : null,
+        packages,
+        filesTable,
+        deps,
+        managers,
+      ),
+    );
+  }
+
+  /** The Effect files of a repository; a row expands into its imports and symbols. */
+  const effectFilesTable = (repo, rows) => {
+    const tbody = h("tbody");
+    const expanded = new Map();
     for (const row of rows) {
-      if (!byType.has(row.type)) byType.set(row.type, []);
-      byType.get(row.type).push(row);
-    }
-    const container = document.getElementById("tables");
-    if (rows.length === 0) {
-      container.innerHTML = `<p class="empty">No matching records. Load files or relax the filters.</p>`;
-      return;
-    }
-    let html = "";
-    for (const [type, typed] of byType) {
-      const definition = Viz.recordTypes.get(type);
-      const visible = sortedRowsFor(type, typed).slice(0, MAX_ROWS);
-      html += `<h2>${escapeHtml(definition ? definition.label : type)} <small>(${typed.length})</small></h2>`;
-      html += `<div class="table-wrap"><table><thead><tr>`;
-      for (const column of definition.columns) {
-        const active = state.sort.type === type && state.sort.column === column.key;
-        const arrow = active ? (state.sort.dir === 1 ? " ↑" : " ↓") : "";
-        html += `<th data-type="${escapeHtml(type)}" data-column="${escapeHtml(column.key)}" class="sortable">${escapeHtml(column.label)}${arrow}</th>`;
-      }
-      html += `</tr></thead><tbody>`;
-      for (const row of visible) {
-        html += `<tr data-line="${row.line}" data-file="${escapeHtml(row.file)}">`;
-        for (const column of definition.columns) {
-          html += `<td>${escapeHtml(column.get(row.record))}</td>`;
+      const tr = h(
+        "tr",
+        { class: "clickable", tabindex: "0", "aria-expanded": "false" },
+        h("td", { class: "wrap mono" }, row.file),
+        h("td", null, roleName[row.role] || row.role),
+        h("td", { class: "num" }, int(row.loc)),
+        h("td", { class: "num" }, int(row.importCount)),
+        h("td", { class: "num" }, int(row.symbolTotal)),
+        h("td", null, row.parser === "oxc" ? "" : row.parser),
+      );
+      const toggle = async () => {
+        const open = expanded.get(row.file);
+        if (open) {
+          open.remove();
+          expanded.delete(row.file);
+          tr.setAttribute("aria-expanded", "false");
+          return;
         }
-        html += `</tr>`;
-      }
-      html += `</tbody></table>`;
-      if (typed.length > visible.length) {
-        html += `<p class="empty">Showing first ${visible.length} of ${typed.length} rows. Narrow with filters or search.</p>`;
-      }
-      html += `</div>`;
+        const detailRow = h(
+          "tr",
+          { class: "file-detail" },
+          h("td", { colspan: "6" }, h("span", { class: "muted" }, "Loading…")),
+        );
+        tr.after(detailRow);
+        expanded.set(row.file, detailRow);
+        tr.setAttribute("aria-expanded", "true");
+        const file = await api("file", { repo: repo.repoId, file: row.file });
+        detailRow.firstChild.replaceChildren(
+          h(
+            "div",
+            { class: "inner" },
+            h(
+              "div",
+              null,
+              h("b", null, "Imports"),
+              h(
+                "ul",
+                null,
+                file.imports.map((entry) =>
+                  h(
+                    "li",
+                    null,
+                    h(
+                      "a",
+                      {
+                        href: fileUrl(repo, row.file, entry.line),
+                        target: "_blank",
+                        rel: "noopener",
+                      },
+                      `L${entry.line}`,
+                    ),
+                    " ",
+                    h("span", { class: "mono" }, entry.module),
+                    ` ${entry.kind}`,
+                    entry.names.length > 0
+                      ? h(
+                          "span",
+                          { class: "muted" },
+                          ` { ${entry.names.map((n) => (n.imported === n.local ? n.local : `${n.imported} as ${n.local}`)).join(", ")} }`,
+                        )
+                      : null,
+                  ),
+                ),
+              ),
+            ),
+            h(
+              "div",
+              null,
+              h("b", null, "Symbols"),
+              file.symbols.length === 0
+                ? h("p", { class: "muted" }, "none (text-scanned or import-only)")
+                : h(
+                    "ul",
+                    null,
+                    file.symbols
+                      .slice(0, 40)
+                      .map((symbol) =>
+                        h(
+                          "li",
+                          null,
+                          h("span", { class: "mono" }, symbol.symbol),
+                          h("span", { class: "muted" }, ` ${symbol.kind} × ${symbol.count}`),
+                        ),
+                      ),
+                  ),
+            ),
+            h(
+              "div",
+              null,
+              h(
+                "a",
+                { href: fileUrl(repo, row.file), target: "_blank", rel: "noopener" },
+                "Open on GitHub ↗",
+              ),
+            ),
+          ),
+        );
+      };
+      tr.addEventListener("click", toggle);
+      tr.addEventListener("keydown", (event) => event.key === "Enter" && toggle());
+      tbody.append(tr);
     }
-    container.innerHTML = html;
-  }
+    return h(
+      "table",
+      null,
+      h(
+        "thead",
+        null,
+        h(
+          "tr",
+          null,
+          h("th", null, "File"),
+          h("th", null, "Role"),
+          h("th", { class: "num" }, "LOC"),
+          h("th", { class: "num" }, "Imports"),
+          h("th", { class: "num" }, "Symbols"),
+          h("th", null, "Parser"),
+        ),
+      ),
+      tbody,
+    );
+  };
 
-  function sortedRowsFor(type, rows) {
-    const definition = Viz.recordTypes.get(type);
-    const { column: sortKey, dir } = state.sort;
-    const column =
-      state.sort.type === type ? definition.columns.find((c) => c.key === sortKey) : undefined;
-    if (!column || !column.sort) return rows;
-    return [...rows].sort((a, b) => {
-      const left = column.sort(a.record);
-      const right = column.sort(b.record);
-      return left < right ? -dir : left > right ? dir : 0;
-    });
-  }
-
-  function renderProblems() {
-    const container = document.getElementById("problems");
-    if (state.problems.length === 0) {
-      container.innerHTML = "";
-      return;
-    }
-    container.innerHTML =
-      `<h2>Skipped lines (${state.problems.length})</h2><ul>` +
-      state.problems
-        .slice(0, 50)
-        .map((p) => `<li><code>${escapeHtml(p.file)}:${p.line}</code> ${escapeHtml(p.text)}</li>`)
-        .join("") +
-      `</ul>`;
-  }
-
-  const DETAIL_JSON_LIMIT = 200000;
-
-  function renderDetail(file, line) {
-    const row = state.rows.find((r) => r.file === file && r.line === line);
-    const panel = document.getElementById("detail");
-    const body = document.getElementById("detail-body");
-    if (!row) {
-      panel.hidden = true;
-      return;
-    }
-    const definition = Viz.recordTypes.get(row.type);
-    const signals = row.record.signals || [];
-    const raw = JSON.stringify(row.record, null, 2);
-    const truncated = raw.length > DETAIL_JSON_LIMIT;
-    body.innerHTML =
-      `<p><code>${escapeHtml(file)}:${line}</code> · ${escapeHtml(definition ? definition.label : row.type)}</p>` +
-      signals.map((signal) => Viz.renderSignal(signal)).join("") +
-      (truncated
-        ? `<p class="detail-note">Raw record too large to show in full (${Math.round(raw.length / 1024)} KB) — showing the first ${Math.round(DETAIL_JSON_LIMIT / 1024)} KB. The complete record is in the state file itself.</p>`
-        : "") +
-      `<pre>${escapeHtml(truncated ? raw.slice(0, DETAIL_JSON_LIMIT) : raw)}</pre>`;
-    panel.hidden = false;
+  async function symbolDrawer(symbol, kind, key) {
+    const rows = await api("symbol", { ...filterParams(), symbol, symbolKind: kind });
+    if (drawerKey !== key) return;
+    const usages = rows.reduce((sum, row) => sum + row.usages, 0);
+    showDrawer(
+      symbol,
+      h(
+        "div",
+        null,
+        h(
+          "div",
+          { class: "facts" },
+          h("span", null, h("b", null, kind === "all" ? "any position" : kind)),
+          h("span", null, `${int(rows.length)} repositories`),
+          h("span", null, `${int(usages)} usages`),
+        ),
+        rows.length === 0
+          ? h(
+              "p",
+              { class: "empty" },
+              "No analyzed repository uses this symbol under the current filters.",
+            )
+          : [
+              sectionHead("Repositories", "click to open"),
+              h(
+                "div",
+                { class: "table-wrap" },
+                table({
+                  columns: [
+                    { label: "Repository", cell: (r) => r.fullName },
+                    { label: "★", num: true, cell: (r) => compact(r.stars) },
+                    { label: "Files", num: true, cell: (r) => int(r.files) },
+                    { label: "Usages", num: true, cell: (r) => int(r.usages) },
+                  ],
+                  rows,
+                  onRow: (row) =>
+                    navigate({ symbol: null, symbolKind: "all", repo: String(row.repoId) }),
+                  rowLabel: (row) => `Open ${row.fullName}`,
+                }),
+              ),
+            ],
+      ),
+    );
   }
 
   // ------------------------------------------------------------------
-  // Events
+  // Chrome: tabs, filters, theme, live status
   // ------------------------------------------------------------------
 
-  const fileInput = document.getElementById("file-input");
-  fileInput.addEventListener("change", () => loadFiles(fileInput.files));
+  function debounce(fn, wait) {
+    let timer;
+    return (...args) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => fn(...args), wait);
+    };
+  }
 
-  const dropZone = document.getElementById("drop-zone");
-  dropZone.addEventListener("dragover", (event) => {
-    event.preventDefault();
-    dropZone.classList.add("over");
-  });
-  dropZone.addEventListener("dragleave", () => dropZone.classList.remove("over"));
-  dropZone.addEventListener("drop", (event) => {
-    event.preventDefault();
-    dropZone.classList.remove("over");
-    loadFiles(event.dataTransfer.files);
-  });
+  const inputs = {
+    q: document.getElementById("f-q"),
+    status: document.getElementById("f-status"),
+    minStars: document.getElementById("f-stars"),
+    role: document.getElementById("f-role"),
+    kind: document.getElementById("f-kind"),
+  };
 
-  document.getElementById("clear-btn").addEventListener("click", () => {
-    state.rows = [];
-    state.problems = [];
-    state.files = [];
-    render();
-  });
-
-  document.getElementById("search-input").addEventListener("input", (event) => {
-    state.search = event.target.value;
-    render();
-  });
-
-  document.getElementById("type-select").addEventListener("change", (event) => {
-    state.type = event.target.value;
-    render();
-  });
-
-  document.getElementById("status-select").addEventListener("change", (event) => {
-    state.status = event.target.value;
-    render();
-  });
-
-  document.getElementById("adopter-select").addEventListener("change", (event) => {
-    state.adopter = event.target.value;
-    render();
-  });
-
-  document.getElementById("signal-filters").addEventListener("change", (event) => {
-    const tag = event.target.dataset.signal;
-    if (tag === undefined) return;
-    if (event.target.checked) state.signals.add(tag);
-    else state.signals.delete(tag);
-    render();
-  });
-
-  document.getElementById("tables").addEventListener("click", (event) => {
-    const header = event.target.closest("th.sortable");
-    if (header) {
-      const type = header.dataset.type;
-      const column = header.dataset.column;
-      if (state.sort.type === type && state.sort.column === column) {
-        state.sort.dir = -state.sort.dir;
-      } else {
-        state.sort = { type, column, dir: 1 };
-      }
-      render();
-      return;
+  const syncChrome = () => {
+    for (const button of document.querySelectorAll(".tabs button")) {
+      button.setAttribute("aria-selected", String(button.dataset.tab === state.tab));
     }
-    const row = event.target.closest("tr[data-line]");
-    if (row) renderDetail(row.dataset.file, Number(row.dataset.line));
+    for (const [key, input] of Object.entries(inputs)) {
+      if (document.activeElement !== input) input.value = state.filters[key];
+    }
+    // Raw tables are not filtered: the filter row would only mislead there.
+    document.getElementById("filters").hidden = state.tab === "data";
+    document.title = `e20r · ${{ overview: "Overview", repos: "Repositories", symbols: "Symbols", data: "Data" }[state.tab]}`;
+  };
+
+  let lastViewKey = null;
+  const onRoute = () => {
+    readHash();
+    syncChrome();
+    const viewKey = hashFor({ repo: null, symbol: null, symbolKind: "all" });
+    if (viewKey !== lastViewKey) {
+      lastViewKey = viewKey;
+      renderView();
+    }
+    renderDrawer();
+  };
+
+  for (const button of document.querySelectorAll(".tabs button")) {
+    button.addEventListener("click", () => navigate({ tab: button.dataset.tab }));
+  }
+
+  const setFilter = (key, value) =>
+    navigate({ filters: { ...state.filters, [key]: value } }, key === "q" || key === "minStars");
+  inputs.q.addEventListener(
+    "input",
+    debounce(() => setFilter("q", inputs.q.value.trim()), 250),
+  );
+  inputs.minStars.addEventListener(
+    "input",
+    debounce(() => setFilter("minStars", inputs.minStars.value.trim()), 350),
+  );
+  for (const key of ["status", "role", "kind"])
+    inputs[key].addEventListener("change", () => setFilter(key, inputs[key].value));
+  document.getElementById("filters").addEventListener("submit", (event) => event.preventDefault());
+  document
+    .getElementById("f-reset")
+    .addEventListener("click", () => navigate({ filters: { ...defaults } }));
+
+  document.getElementById("drawer-close").addEventListener("click", closeDrawer);
+  scrim.addEventListener("click", closeDrawer);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !drawer.hidden) closeDrawer();
   });
 
-  render();
+  window.addEventListener("popstate", onRoute);
+
+  // Theme: system -> light -> dark, remembered per browser (a convenience only).
+  const themeButton = document.getElementById("theme-toggle");
+  const themes = ["system", "light", "dark"];
+  const storedTheme = () => {
+    try {
+      return localStorage.getItem("e20r-theme") || "system";
+    } catch {
+      return "system";
+    }
+  };
+  const applyTheme = (theme) => {
+    if (theme === "system") delete document.documentElement.dataset.theme;
+    else document.documentElement.dataset.theme = theme;
+    themeButton.textContent = { system: "◐ System", light: "○ Light", dark: "● Dark" }[theme];
+    themeButton.title = `Theme: ${theme} (click to change)`;
+  };
+  themeButton.addEventListener("click", () => {
+    const next = themes[(themes.indexOf(storedTheme()) + 1) % themes.length];
+    try {
+      localStorage.setItem("e20r-theme", next);
+    } catch {
+      // not persisted; still applied
+    }
+    applyTheme(next);
+  });
+  applyTheme(storedTheme());
+
+  // Live: poll the database's last update; re-render when it moves.
+  const status = document.getElementById("db-status");
+  const live = document.getElementById("live-toggle");
+  const updateStatus = () => {
+    const meta = state.meta;
+    if (!meta) return;
+    const processed = meta.tables.find((entry) => entry.name === "repo_state")?.rows ?? 0;
+    const recent = meta.lastUpdate && Date.now() - Date.parse(meta.lastUpdate) < 60_000;
+    status.replaceChildren(
+      h("span", {
+        class: `dot${recent ? " fresh" : ""}`,
+        title: recent ? "written in the last minute" : "idle",
+      }),
+      `${int(processed)} repos · updated ${ago(meta.lastUpdate)}`,
+    );
+  };
+  const poll = async (first = false) => {
+    try {
+      const meta = await api("meta");
+      const changed = state.meta !== null && meta.lastUpdate !== state.meta.lastUpdate;
+      state.meta = meta;
+      updateStatus();
+      if (changed && live.checked && !first) {
+        renderView();
+        renderDrawer(true);
+      }
+    } catch (error) {
+      status.textContent = `database unavailable: ${error.message}`;
+    }
+  };
+
+  poll(true).then(() => {
+    if (!location.hash) history.replaceState(null, "", hashFor({}));
+    onRoute();
+  });
+  setInterval(() => poll(), 10_000);
+  setInterval(updateStatus, 5_000);
 })();

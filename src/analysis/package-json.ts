@@ -1,7 +1,6 @@
-import { Effect, Path, Schema } from "effect";
+import { Array, Effect, Option, Path, Schema } from "effect";
 import * as FileSystem from "effect/FileSystem";
-import { Array, Option, String } from "effect";
-import type { EffectVersion } from "../domain/clone-state.ts";
+import type { DependencyField, EffectVersion } from "../domain/selection.ts";
 
 /**
  * The subset of a `package.json` manifest this application cares about.
@@ -28,16 +27,7 @@ export const PackageJsonManifestSchema = Schema.Struct({
 
 export type PackageJsonManifest = Schema.Schema.Type<typeof PackageJsonManifestSchema>;
 
-export const DependencyFieldSchema = Schema.Literals([
-  "dependencies",
-  "devDependencies",
-  "peerDependencies",
-  "optionalDependencies",
-]);
-
-export type DependencyField = Schema.Schema.Type<typeof DependencyFieldSchema>;
-
-const dependencyFields: ReadonlyArray<DependencyField> = [
+export const dependencyFields: ReadonlyArray<DependencyField> = [
   "dependencies",
   "devDependencies",
   "peerDependencies",
@@ -47,64 +37,60 @@ const dependencyFields: ReadonlyArray<DependencyField> = [
 const decodeManifest = Schema.decodeUnknownOption(Schema.fromJsonString(PackageJsonManifestSchema));
 
 export interface ManifestEntry {
+  /** Path relative to the clone root. */
   readonly file: string;
   readonly manifest: PackageJsonManifest;
 }
 
 /**
- * Finds all `package.json` files below `cloneDir` (excluding `node_modules`)
- * and decodes them. Malformed or unreadable manifests are skipped, not fatal:
- * a single broken file must not fail the analysis of the whole repository.
+ * Reads and decodes the given manifests (paths relative to `cloneDir`, as
+ * listed by the git tree). Malformed or unreadable manifests are skipped, not
+ * fatal: a single broken file must not fail the analysis of the whole
+ * repository.
  */
-export const findManifests = (
+export const readManifests = (
   cloneDir: string,
+  files: ReadonlyArray<string>,
 ): Effect.Effect<ReadonlyArray<ManifestEntry>, never, FileSystem.FileSystem | Path.Path> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
 
-    // Node's glob returns paths relative to the root directory.
-    const globbed = yield* fs
-      .glob("**/package.json", {
-        root: cloneDir,
-        exclude: ["**/node_modules/**"],
-      })
-      .pipe(Effect.option);
-
-    const files = Option.match(globbed, {
-      onNone: () => [],
-      onSome: Array.sort(String.Order),
-    });
-
-    const decoded = yield* Effect.forEach(files, (file) =>
-      Effect.gen(function* () {
-        const content = yield* Effect.option(fs.readFileString(path.join(cloneDir, file)));
-        if (Option.isNone(content)) return Option.none();
-        const manifest = decodeManifest(content.value);
-        if (Option.isNone(manifest)) return Option.none();
-        return Option.some({
-          file,
-          manifest: manifest.value,
-        } satisfies ManifestEntry);
-      }),
+    const decoded = yield* Effect.forEach(
+      files,
+      (file) =>
+        Effect.map(Effect.option(fs.readFileString(path.join(cloneDir, file))), (content) =>
+          Option.flatMap(content, (text) =>
+            Option.map(decodeManifest(text), (manifest): ManifestEntry => ({ file, manifest })),
+          ),
+        ),
+      { concurrency: 16 },
     );
 
     return Array.getSomes(decoded);
   });
 
+/** Packages of the Effect ecosystem: `effect` itself and the official `@effect/*` scope. */
+export const isEffectPackage = (name: string): boolean =>
+  name === "effect" || name.startsWith("@effect/");
+
+export interface DependencyRef {
+  readonly package: string;
+  readonly field: DependencyField;
+  readonly version: EffectVersion;
+}
+
 /**
- * All `effect` dependency references in a manifest, one per dependency field.
- * The key must be exactly `effect` (no scoping, no `@effect/*` packages).
+ * All `effect` and `@effect/*` dependency references in a manifest, one per
+ * package and dependency field.
  */
-export const effectRefs = (
-  manifest: PackageJsonManifest,
-): ReadonlyArray<{ readonly field: DependencyField; readonly version: EffectVersion }> => {
-  const refs: Array<{ readonly field: DependencyField; readonly version: EffectVersion }> = [];
+export const effectRefs = (manifest: PackageJsonManifest): ReadonlyArray<DependencyRef> => {
+  const refs: Array<DependencyRef> = [];
   for (const field of dependencyFields) {
-    const map = manifest[field];
-    const version = map?.["effect"];
-    if (version !== undefined) {
-      refs.push({ field, version: version as EffectVersion });
+    for (const [name, version] of Object.entries(manifest[field] ?? {})) {
+      if (isEffectPackage(name) && version !== "") {
+        refs.push({ package: name, field, version: version as EffectVersion });
+      }
     }
   }
   return refs;

@@ -1,7 +1,7 @@
 import { Effect, Option, Schema } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import YAML from "yaml";
-import type { EffectVersion } from "../domain/clone-state.ts";
+import type { EffectVersion } from "../domain/selection.ts";
 
 /**
  * The subset of a pnpm workspace file this application cares about: the

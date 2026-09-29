@@ -1,4 +1,5 @@
-import type { EffectImport } from "../domain/analysis-state.ts";
+import type { EffectImport, ImportKind, ImportName } from "../domain/usage.ts";
+import { makeLineIndex } from "./lines.ts";
 
 /**
  * Text-level scan for Effect imports in one source file. Pure and cheap by
@@ -8,17 +9,9 @@ import type { EffectImport } from "../domain/analysis-state.ts";
  * It is a scanner, not a parser: statements are recognized by line-anchored
  * patterns shaped like the real import grammar, which is exact for normal
  * code and only approximate for pathological input (e.g. an `import` inside
- * a block comment or a template literal). When an AST-based probe lands, it
- * can emit corrected rows for the edge cases this scan misses.
+ * a block comment or a template literal). It is the fallback for files the
+ * AST parser (`usage.ts`) cannot parse.
  */
-
-/** One binding of an import clause, e.g. `Effect as E` -> imported "Effect", local "E". */
-export type ImportName = EffectImport["names"][number];
-
-export type ImportKind = EffectImport["kind"];
-
-/** One Effect import of one file, exactly as the signal stores it. */
-export type EffectImportRow = EffectImport;
 
 /**
  * Module specifiers that belong to the Effect library: the `effect` package
@@ -107,20 +100,12 @@ export const parseClauseNames = (clause: string): ReadonlyArray<ImportName> => {
   return names;
 };
 
-const lineOf = (source: string, index: number): number => {
-  let line = 1;
-  for (let i = 0; i < index; i++) {
-    if (source.charCodeAt(i) === 10) line++;
-  }
-  return line;
-};
-
 const row = (
-  source: string,
+  lineOf: (offset: number) => number,
   match: RegExpExecArray | RegExpMatchArray,
   kind: ImportKind,
   names: ReadonlyArray<ImportName>,
-): EffectImportRow | undefined => {
+): EffectImport | undefined => {
   const specifier = match.groups?.["specifier"];
   const index = match.index ?? 0;
   if (specifier === undefined || !isEffectModule(specifier)) return undefined;
@@ -128,7 +113,7 @@ const row = (
     module: specifier,
     package: effectPackageName(specifier),
     kind,
-    line: lineOf(source, index),
+    line: lineOf(index),
     names,
   };
 };
@@ -137,29 +122,30 @@ const row = (
  * Every Effect import of one source file, ordered by line. Absence of Effect
  * imports is an empty list.
  */
-export const scanEffectImports = (source: string): ReadonlyArray<EffectImportRow> => {
-  const rows: Array<EffectImportRow> = [];
+export const scanEffectImports = (source: string): ReadonlyArray<EffectImport> => {
+  const rows: Array<EffectImport> = [];
+  const lineOf = makeLineIndex(source);
 
   for (const match of source.matchAll(fromStatement)) {
     const keyword = match.groups?.["keyword"];
     const clause = match.groups?.["clause"] ?? "";
     const kind: ImportKind = keyword === "export" ? "export-from" : "import";
-    const parsed = row(source, match, kind, parseClauseNames(clause));
+    const parsed = row(lineOf, match, kind, parseClauseNames(clause));
     if (parsed !== undefined) rows.push(parsed);
   }
 
   for (const match of source.matchAll(sideEffectImport)) {
-    const parsed = row(source, match, "import", []);
+    const parsed = row(lineOf, match, "import", []);
     if (parsed !== undefined) rows.push(parsed);
   }
 
   for (const match of source.matchAll(requireCall)) {
-    const parsed = row(source, match, "require", []);
+    const parsed = row(lineOf, match, "require", []);
     if (parsed !== undefined) rows.push(parsed);
   }
 
   for (const match of source.matchAll(dynamicImport)) {
-    const parsed = row(source, match, "dynamic-import", []);
+    const parsed = row(lineOf, match, "dynamic-import", []);
     if (parsed !== undefined) rows.push(parsed);
   }
 

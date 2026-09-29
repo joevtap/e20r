@@ -3,142 +3,91 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>e20r state viewer</title>
+    <title>e20r · Effect adoption</title>
     <link rel="stylesheet" href="style.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1' y='9' width='3' height='6' rx='1' fill='%232a78d6'/%3E%3Crect x='6.5' y='5' width='3' height='10' rx='1' fill='%232a78d6'/%3E%3Crect x='12' y='1' width='3' height='14' rx='1' fill='%232a78d6'/%3E%3C/svg%3E"
+    />
   </head>
   <body>
-    <header class="hero">
-      <div>
-        <h1>e20r state viewer</h1>
-        <p class="subtitle">
-          Explore what the <code>e20r</code> pipeline learned about Effect adoption in TypeScript
-          repositories. Everything runs locally in your browser — files are never uploaded.
-        </p>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">e20r</span>
+        <span class="brand-title">Effect adoption in TypeScript</span>
       </div>
-
-      <div id="drop-zone">
-        <label class="file-label" for="file-input">Choose files…</label>
-        <input id="file-input" type="file" multiple accept=".jsonl,.json,.txt,.ndjson" />
-        <p class="drop-hint">
-          Drop the pipeline's <code>.jsonl</code> files here, or use the picker. Load any mix, in
-          any order — the page derives everything else.
-        </p>
+      <nav class="tabs" role="tablist" aria-label="Views">
+        <button role="tab" data-tab="overview">Overview</button>
+        <button role="tab" data-tab="repos">Repositories</button>
+        <button role="tab" data-tab="symbols">Symbols</button>
+        <button role="tab" data-tab="data">Data</button>
+      </nav>
+      <div class="topbar-end">
+        <span id="db-status" class="db-status" aria-live="polite"></span>
+        <label class="toggle" title="Refresh when the database changes (e.g. while a run is writing)">
+          <input id="live-toggle" type="checkbox" checked /> Live
+        </label>
+        <button id="theme-toggle" class="ghost" type="button" aria-label="Color theme"></button>
       </div>
-
-      <div id="file-summary" class="toolbar"></div>
-      <button id="clear-btn" type="button">Clear loaded data</button>
     </header>
 
-    <section id="guide" class="panel">
-      <h2>What each file reveals</h2>
-      <p class="guide-intro">
-        The pipeline writes one JSONL state file per stage. Each answers different questions — load
-        the ones you care about, or all of them together:
-      </p>
-      <div class="guide-grid">
-        <article class="guide-card">
-          <h3><code>repos.jsonl</code> <span class="stage">the crawl</span></h3>
-          <p>Every repository the GitHub crawl saw: stars, forks, activity, language.</p>
-          <p class="answers"><b>Answers:</b> what is the population we looked at?</p>
-        </article>
-        <article class="guide-card">
-          <h3><code>clone-state.jsonl</code> <span class="stage">the selection</span></h3>
-          <p>
-            Per repository: clone outcome, manifest signals (Effect versions, package managers) and
-            the adopter decision.
-          </p>
-          <p class="answers">
-            <b>Answers:</b> which repos use Effect at all, and how is it declared?
-          </p>
-        </article>
-        <article class="guide-card">
-          <h3><code>effect-repos.jsonl</code> <span class="stage">the hand-off</span></h3>
-          <p>
-            Adopters handed to deep analysis, each pinned to the exact commit that was analyzed.
-          </p>
-          <p class="answers"><b>Answers:</b> which repositories got the deep dive?</p>
-        </article>
-        <article class="guide-card">
-          <h3><code>analysis-state.jsonl</code> <span class="stage">the usage</span></h3>
-          <p>
-            Per adopter: TypeScript file inventory, Effect imports per file, packages used, and AST
-            symbol usage (calls, types, property accesses).
-          </p>
-          <p class="answers"><b>Answers:</b> how deeply is Effect actually used in the code?</p>
-        </article>
-        <article class="guide-card">
-          <h3><code>run-summary.jsonl</code> <span class="stage">the population</span></h3>
-          <p>One snapshot per run: repos analysed, adopters, and the resulting ratios.</p>
-          <p class="answers">
-            <b>Answers:</b> out of the analysed repos, how many use Effect — and how does that
-            trend?
-          </p>
-        </article>
+    <form id="filters" class="filters" aria-label="Filters">
+      <label class="field grow">
+        <span>Repository</span>
+        <input id="f-q" type="search" placeholder="name or topic" autocomplete="off" />
+      </label>
+      <label class="field">
+        <span>Status</span>
+        <select id="f-status">
+          <option value="processed">all processed</option>
+          <option value="adopters">adopters</option>
+          <option value="analyzed">analyzed</option>
+          <option value="excluded">excluded</option>
+          <option value="selected">awaiting analysis</option>
+          <option value="not-adopter">not adopters</option>
+          <option value="failed">failed</option>
+        </select>
+      </label>
+      <label class="field narrow">
+        <span>Min ★</span>
+        <input id="f-stars" type="number" min="0" step="1000" inputmode="numeric" placeholder="0" />
+      </label>
+      <label class="field">
+        <span>Code</span>
+        <select id="f-role">
+          <option value="all">all files</option>
+          <option value="authored">hand-written</option>
+          <option value="source">production</option>
+          <option value="test">tests</option>
+          <option value="generated">generated</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Symbol position</span>
+        <select id="f-kind">
+          <option value="all">any</option>
+          <option value="call">call</option>
+          <option value="property-access">property access</option>
+          <option value="type-reference">type reference</option>
+          <option value="identifier">bare identifier</option>
+        </select>
+      </label>
+      <button id="f-reset" class="ghost" type="button">Reset</button>
+    </form>
+
+    <main id="view" tabindex="-1"></main>
+
+    <aside id="drawer" class="drawer" hidden aria-labelledby="drawer-title">
+      <div class="drawer-head">
+        <h2 id="drawer-title"></h2>
+        <button id="drawer-close" class="ghost" type="button" aria-label="Close">✕</button>
       </div>
-      <p class="guide-foot">
-        Records are appended across runs; where it matters, this page counts each repository once
-        (latest record wins), like the pipeline itself. Unknown record shapes and signal tags still
-        show up as raw JSON — newer pipelines never break this page.
-      </p>
-    </section>
+      <div id="drawer-body" class="drawer-body"></div>
+    </aside>
+    <div id="scrim" class="scrim" hidden></div>
 
-    <section id="stats" class="panel">
-      <h2>Summary</h2>
-    </section>
+    <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
 
-    <section id="charts" class="panel">
-      <h2>Insights</h2>
-      <p class="guide-intro">Derived from the loaded records; every chart respects the filters.</p>
-      <div id="charts-grid" class="chart-grid"></div>
-    </section>
-
-    <section id="filters" class="panel">
-      <h2>Filters</h2>
-      <div class="filter-row">
-        <label>
-          Search
-          <input id="search-input" type="search" placeholder="name, commit, error, signal, file…" />
-        </label>
-        <label>
-          Record type
-          <select id="type-select">
-            <option value="all">all types</option>
-          </select>
-        </label>
-        <label>
-          Clone status
-          <select id="status-select">
-            <option value="all">any</option>
-            <option value="cloned">cloned</option>
-            <option value="clone-failed">clone-failed</option>
-          </select>
-        </label>
-        <label>
-          Adopter
-          <select id="adopter-select">
-            <option value="all">any</option>
-            <option value="yes">adopters only</option>
-            <option value="no">non-adopters only</option>
-          </select>
-        </label>
-      </div>
-      <div id="signal-filters" class="filter-row"></div>
-    </section>
-
-    <main>
-      <section id="tables"></section>
-      <aside id="detail" class="panel" hidden>
-        <h2>Record detail</h2>
-        <div id="detail-body"></div>
-      </aside>
-    </main>
-
-    <section id="problems" class="panel"></section>
-
-    <!-- Plain scripts, in order, sharing the window.Viz namespace.
-         See README.md for the extension points. -->
-    <script src="records.js" defer></script>
-    <script src="signals.js" defer></script>
     <script src="charts.js" defer></script>
     <script src="app.js" defer></script>
   </body>
