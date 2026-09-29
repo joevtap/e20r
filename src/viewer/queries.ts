@@ -253,15 +253,48 @@ export const meta: Effect.Effect<Meta, SqlError, SqlClient.SqlClient> = Effect.g
   };
 });
 
-/** One page of a raw table or view, JSON columns decoded. */
-export const tablePage = (name: BrowsableTable, page: { limit: number; offset: number }) =>
+/**
+ * One page of a raw table or view, JSON columns decoded, optionally sorted
+ * by one of its columns. The column list comes from the schema, so the
+ * header exists even for an empty table, and a sort column is only used
+ * when the schema has it (it is interpolated as an identifier).
+ */
+export const tablePage = (
+  name: BrowsableTable,
+  page: { limit: number; offset: number },
+  sort?: { readonly column: string; readonly dir: "asc" | "desc" },
+) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const info = yield* sql<{ name: string }>`SELECT name FROM pragma_table_info(${name})`;
+    // Results are camelCased (the client's result transform); sort keys come
+    // back in that form, so both spellings are accepted.
+    const columns = info.map((column) => column.name);
+    const sortColumn =
+      sort === undefined
+        ? undefined
+        : columns.find((column) => column === sort.column || snakeToCamel(column) === sort.column);
+    const order =
+      sortColumn === undefined
+        ? sql``
+        : sql`ORDER BY ${sql(sortColumn)} ${sql.literal(sort?.dir === "desc" ? "DESC" : "ASC")} NULLS LAST`;
     const total = yield* sql<{ rows: number }>`SELECT count(*) AS rows FROM ${sql(name)}`;
     const rows = yield* sql<Record<string, unknown>>`
-      SELECT * FROM ${sql(name)} LIMIT ${page.limit} OFFSET ${page.offset}`;
-    return { name, total: total[0]?.rows ?? 0, rows: rows.map(decodeJsonColumns) };
+      SELECT * FROM ${sql(name)} ${order} LIMIT ${page.limit} OFFSET ${page.offset}`;
+    return {
+      name,
+      total: total[0]?.rows ?? 0,
+      columns: columns.map(snakeToCamel),
+      sort:
+        sortColumn === undefined
+          ? null
+          : { column: snakeToCamel(sortColumn), dir: sort?.dir ?? "asc" },
+      rows: rows.map(decodeJsonColumns),
+    };
   });
+
+const snakeToCamel = (name: string): string =>
+  name.replace(/_([a-z0-9])/g, (_, char: string) => char.toUpperCase());
 
 // ---- overview ----
 

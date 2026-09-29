@@ -106,6 +106,17 @@ const filesCsv: Handler = Effect.gen(function* () {
   ),
 );
 
+/** `sort=column&dir=asc|desc` of the raw table endpoint (column checked by the query). */
+const tableSort = (params: HttpServerRequest.ParsedSearchParams["Service"]) => {
+  const column = param(params, "sort");
+  return column === undefined || column === ""
+    ? undefined
+    : {
+        column: column.slice(0, 64),
+        dir: param(params, "dir") === "desc" ? ("desc" as const) : ("asc" as const),
+      };
+};
+
 const ApiRoutes = HttpRouter.addAll([
   HttpRouter.route(
     "GET",
@@ -129,9 +140,7 @@ const ApiRoutes = HttpRouter.addAll([
     "/api/repo",
     endpoint((params) => {
       const id = repoId(params);
-      return Number.isInteger(id)
-        ? repository(id, parseFilters(params))
-        : notFound;
+      return Number.isInteger(id) ? repository(id, parseFilters(params)) : notFound;
     }),
   ),
   HttpRouter.route(
@@ -140,9 +149,7 @@ const ApiRoutes = HttpRouter.addAll([
     endpoint((params) => {
       const id = repoId(params);
       const file = param(params, "file");
-      return Number.isInteger(id) && file !== undefined
-        ? repositoryFile(id, file)
-        : notFound;
+      return Number.isInteger(id) && file !== undefined ? repositoryFile(id, file) : notFound;
     }),
   ),
   HttpRouter.route(
@@ -193,7 +200,7 @@ const ApiRoutes = HttpRouter.addAll([
     endpoint((params) => {
       const name = param(params, "name");
       return name !== undefined && (browsableTables as ReadonlyArray<string>).includes(name)
-        ? tablePage(name as BrowsableTable, parsePage(params, 100))
+        ? tablePage(name as BrowsableTable, parsePage(params, 100), tableSort(params))
         : notFound;
     }),
   ),

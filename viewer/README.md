@@ -23,7 +23,7 @@ and scroll position and show a **New data · Refresh** button instead.
 | **Repositories** | Every processed repository, sortable on the server (stars, status, TS files, Effect files, depth, share of lines, Effect packages). A row opens its drawer. |
 | **Symbols** | Every `symbol × position` pair with the repositories, files and usages behind it. A row opens the repositories that use the symbol. |
 | **Files** | Every Effect file of the filtered repositories with its most used symbols inline (calls as `fn()`, types as `: T`), searchable by path and by "uses symbol" (e.g. every file calling `Layer.effect`). A row expands into the file's complete symbol list and its imports; **Download CSV** exports the selection as one line per file × symbol. |
-| **Data** | Raw rows of every table and aggregation view, paged. |
+| **Data** | Raw rows of every table and aggregation view, with a description of each: paged (100 rows, first / previous / next / last), sortable by any column, in a scroll box with a pinned header. A row opens all its fields in the drawer (JSON pretty-printed); repository ids open the repository. |
 
 The **repository drawer** shows the stage timings, the exclusion reason or
 failure, the most used symbols and imported packages, per-workspace-package
@@ -79,7 +79,7 @@ fall back to their defaults.
 | `/api/files?path=&uses=&sort=&dir=&limit=&offset=` | One page of Effect files, each with its top symbols |
 | `/api/files.csv?path=&uses=` | The same selection as CSV: `repo,stars,commit,file,role,package_dir,loc,symbol,kind,count` |
 | `/api/symbol?symbol=&symbolKind=` | Repositories using one symbol |
-| `/api/table?name=&limit=&offset=` | Raw rows of one table or view |
+| `/api/table?name=&limit=&offset=&sort=&dir=` | Raw rows of one table or view, its column list, optionally sorted by one of its columns |
 
 The queries live in `src/viewer/queries.ts` and are unit-tested in
 `test/viewer.test.ts`. To add a chart, add its rows to `overview` there and

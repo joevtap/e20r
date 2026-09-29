@@ -16,6 +16,7 @@ import {
   specMajor,
   symbolRepositories,
   symbolTable,
+  tablePage,
 } from "../src/viewer/queries.ts";
 
 const file = (
@@ -385,6 +386,30 @@ describe("viewer queries", () => {
           ["org/repo-2", "test/x.test.ts", "", ""],
         ]);
         expect(tests.trim().split("\n")).toHaveLength(3);
+      }),
+    ),
+  );
+
+  it.effect("pages raw tables, sorting only by real columns", () =>
+    run(
+      Effect.all([
+        tablePage("repos", { limit: 2, offset: 0 }, { column: "stars", dir: "desc" }),
+        tablePage("repos", { limit: 2, offset: 2 }, { column: "stars", dir: "desc" }),
+        tablePage(
+          "repos",
+          { limit: 10, offset: 0 },
+          { column: "stars; DROP TABLE repos", dir: "asc" },
+        ),
+        tablePage("file_symbols", { limit: 1, offset: 0 }, { column: "count", dir: "desc" }),
+      ]),
+    ).pipe(
+      Effect.map(([first, second, injected, symbols]) => {
+        expect(first.rows.map((row) => row["stars"])).toEqual([5000, 300]);
+        expect(second.rows.map((row) => row["stars"])).toEqual([100, 50]);
+        expect(first.columns).toContain("fullName");
+        expect(first.sort).toEqual({ column: "stars", dir: "desc" });
+        expect([injected.sort, injected.total]).toEqual([null, 4]);
+        expect(symbols.rows[0]?.["count"]).toBe(7);
       }),
     ),
   );

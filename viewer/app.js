@@ -94,6 +94,8 @@
     fileRepo: "",
     fileRepoName: "",
     table: "repo_state",
+    tableOffset: 0,
+    tableSort: { key: "", dir: "asc" },
     lastUpdate: null,
     meta: null,
   };
@@ -112,8 +114,13 @@
     state.fileRepo = params.get("fileRepo") || "";
     state.fileRepoName = params.get("fileRepoName") || "";
     state.table = params.get("table") || state.table;
+    state.tableOffset = Math.max(0, Number(params.get("offset")) || 0);
+    if (state.tab === "data") {
+      const [key, dir] = (params.get("sort") || "").split(":");
+      state.tableSort = { key: key || "", dir: dir === "desc" ? "desc" : "asc" };
+    }
     const sort = params.get("sort");
-    if (sort) {
+    if (sort && state.tab !== "data") {
       const [key, dir] = sort.split(":");
       const target =
         state.tab === "symbols"
@@ -144,7 +151,11 @@
       params.set("fileRepo", next.fileRepo);
       params.set("fileRepoName", next.fileRepoName);
     }
-    if (next.tab === "data") params.set("table", next.table);
+    if (next.tab === "data") {
+      params.set("table", next.table);
+      if (next.tableOffset > 0) params.set("offset", String(next.tableOffset));
+      if (next.tableSort.key) params.set("sort", `${next.tableSort.key}:${next.tableSort.dir}`);
+    }
     const sort =
       next.tab === "repos"
         ? next.reposSort
@@ -897,57 +908,278 @@
 
   // ---- data browser ----
 
+  /** What each table holds, at which grain (see src/store/migrations.ts). */
+  const tableInfo = {
+    repos: "Crawled repository: stars, forks, owner, license, topics, dates, raw GitHub payload",
+    repo_state:
+      "Pipeline state per repository: status, adopter, commit, exclusion, error, attempts, timings",
+    manifest_deps: "Every effect / @effect/* dependency: manifest × package × field × specifier",
+    catalog_versions: "pnpm / bun catalog entries for effect",
+    package_managers: "Package manager evidence (lockfiles) per repository",
+    workspace_packages: "Adopters' workspace packages and how they declare effect",
+    file_totals: "TS files, LOC and Effect files per package × role × extension",
+    effect_files: "One row per file that imports Effect",
+    file_imports: "Every Effect import: module, package, kind, line, bound names",
+    file_symbols: "Symbol usages per file: symbol × position with a count",
+    runs: "One row per run: configuration, start / end, population summary",
+    crawl_state: "Where the resumable crawl stands",
+    v_population: "View · the population summary",
+    v_repo_adoption: "View · adoption depth per analyzed repository",
+    v_symbol_usage: "View · symbol usage across analyzed repositories",
+    v_package_usage: "View · package usage across analyzed repositories",
+  };
+
+  /** Columns holding a repository id: their cells open the repository drawer. */
+  const repoIdColumns = new Set(["repoId"]);
+
+  /** A one-line preview of a JSON value (the full value is in the row drawer). */
+  const jsonPreview = (value) => {
+    if (Array.isArray(value)) return `[${value.length}] ${JSON.stringify(value).slice(0, 80)}`;
+    const keys = Object.keys(value);
+    return `{${keys.slice(0, 4).join(", ")}${keys.length > 4 ? ", …" : ""}}`;
+  };
+
+  const dataCell = (key, value, tableName) => {
+    if (value === null || value === undefined) return h("span", { class: "null" }, "null");
+    if (typeof value === "object") {
+      return h(
+        "span",
+        { class: "json", title: "click the row for the full value" },
+        jsonPreview(value),
+      );
+    }
+    const text = String(value);
+    const isRepo =
+      repoIdColumns.has(key) ||
+      (tableName === "repos" && key === "id") ||
+      (tableName === "repo_state" && key === "repoId");
+    if (isRepo && typeof value === "number") {
+      return h(
+        "a",
+        {
+          href: hashFor({ repo: String(value) }),
+          title: "Open the repository",
+          onClick: (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            navigate({ repo: String(value) });
+          },
+        },
+        text,
+      );
+    }
+    return h("span", { title: text.length > 40 ? text.slice(0, 2000) : undefined }, text);
+  };
+
+  /** The full row, one field per line, JSON pretty-printed. */
+  const showRow = (tableName, row) => {
+    const body = h(
+      "dl",
+      { class: "row-fields" },
+      Object.entries(row).map(([key, value]) => [
+        h("dt", { class: "mono" }, key),
+        h(
+          "dd",
+          null,
+          value === null || value === undefined
+            ? h("span", { class: "null" }, "null")
+            : typeof value === "object"
+              ? h("pre", null, JSON.stringify(value, null, 2))
+              : h("span", { class: typeof value === "number" ? "mono" : undefined }, String(value)),
+        ),
+      ]),
+    );
+    const repoId = row.repoId ?? (tableName === "repos" ? row.id : undefined);
+    showDrawer(
+      `${tableName} row`,
+      h(
+        "div",
+        null,
+        repoId !== undefined
+          ? h(
+              "p",
+              { class: "note" },
+              h(
+                "a",
+                {
+                  href: hashFor({ repo: String(repoId) }),
+                  onClick: (event) => {
+                    event.preventDefault();
+                    navigate({ repo: String(repoId) });
+                  },
+                },
+                "Open the repository →",
+              ),
+            )
+          : null,
+        body,
+      ),
+    );
+  };
+
   async function data() {
     const meta = state.meta || (await api("meta"));
     const pageSize = 100;
+    const name = state.table;
+    const sort = state.tableSort;
+    const page = await api("table", {
+      name,
+      limit: pageSize,
+      offset: state.tableOffset,
+      ...(sort.key ? { sort: sort.key, dir: sort.dir } : {}),
+    });
+    const columns =
+      page.columns && page.columns.length > 0
+        ? page.columns
+        : [...new Set(page.rows.flatMap((row) => Object.keys(row)))];
+    // Right-align columns whose values on this page are all numbers.
+    const numeric = new Set(
+      columns.filter(
+        (key) =>
+          page.rows.length > 0 &&
+          page.rows.every((row) => row[key] === null || typeof row[key] === "number"),
+      ),
+    );
+
+    const entry = (item) =>
+      h(
+        "button",
+        {
+          type: "button",
+          "aria-current": item.name === name ? "true" : undefined,
+          title: tableInfo[item.name],
+          onClick: () =>
+            navigate(
+              { table: item.name, tableOffset: 0, tableSort: { key: "", dir: "asc" } },
+              true,
+            ),
+        },
+        h("span", null, item.name),
+        h("span", { class: "count" }, compact(item.rows)),
+      );
+    const tables = meta.tables.filter((item) => !item.name.startsWith("v_"));
+    const views = meta.tables.filter((item) => item.name.startsWith("v_"));
     const list = h(
       "nav",
       { class: "table-list", "aria-label": "Tables" },
-      meta.tables.map((entry) =>
+      h("div", { class: "list-head" }, "Tables"),
+      tables.map(entry),
+      h("div", { class: "list-head" }, "Views"),
+      views.map(entry),
+    );
+
+    const first = page.total === 0 ? 0 : state.tableOffset + 1;
+    const last = Math.min(state.tableOffset + page.rows.length, page.total);
+    const go = (offset) => navigate({ tableOffset: Math.max(0, offset) }, true);
+    const pager = h(
+      "div",
+      { class: "pager" },
+      h("span", null, `rows ${int(first)}–${int(last)} of ${int(page.total)}`),
+      h(
+        "button",
+        {
+          type: "button",
+          disabled: state.tableOffset === 0,
+          onClick: () => go(0),
+          "aria-label": "First page",
+        },
+        "«",
+      ),
+      h(
+        "button",
+        {
+          type: "button",
+          disabled: state.tableOffset === 0,
+          onClick: () => go(state.tableOffset - pageSize),
+        },
+        "‹ Prev",
+      ),
+      h(
+        "button",
+        {
+          type: "button",
+          disabled: last >= page.total,
+          onClick: () => go(state.tableOffset + pageSize),
+        },
+        "Next ›",
+      ),
+      h(
+        "button",
+        {
+          type: "button",
+          disabled: last >= page.total,
+          onClick: () => go(Math.floor((page.total - 1) / pageSize) * pageSize),
+          "aria-label": "Last page",
+        },
+        "»",
+      ),
+    );
+
+    const onSort = (key) => {
+      const next =
+        sort.key === key ? { key, dir: sort.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" };
+      navigate({ tableSort: next, tableOffset: 0 }, true);
+    };
+    const grid = h(
+      "table",
+      { class: "data-table" },
+      h(
+        "thead",
+        null,
         h(
-          "button",
-          {
-            type: "button",
-            "aria-current": entry.name === state.table ? "true" : undefined,
-            onClick: () => navigate({ table: entry.name }, true),
-          },
-          h("span", null, entry.name),
-          h("span", { class: "count" }, compact(entry.rows)),
+          "tr",
+          null,
+          columns.map((key) => {
+            const active = page.sort ? page.sort.column === key : false;
+            return h(
+              "th",
+              {
+                class: `sortable${numeric.has(key) ? " num" : ""}`,
+                tabindex: "0",
+                "aria-sort": active
+                  ? page.sort.dir === "asc"
+                    ? "ascending"
+                    : "descending"
+                  : undefined,
+                onClick: () => onSort(key),
+                onKeydown: (event) => event.key === "Enter" && onSort(key),
+              },
+              key,
+              active ? (page.sort.dir === "asc" ? " ↑" : " ↓") : "",
+            );
+          }),
+        ),
+      ),
+      h(
+        "tbody",
+        null,
+        page.rows.map((row) =>
+          h(
+            "tr",
+            {
+              class: "clickable",
+              tabindex: "0",
+              onClick: () => showRow(name, row),
+              onKeydown: (event) => event.key === "Enter" && showRow(name, row),
+            },
+            columns.map((key) =>
+              h(
+                "td",
+                { class: numeric.has(key) ? "num" : undefined },
+                dataCell(key, row[key], name),
+              ),
+            ),
+          ),
         ),
       ),
     );
-    const cellText = (value) => {
-      if (value === null || value === undefined) return "";
-      if (typeof value === "object") return JSON.stringify(value);
-      return String(value);
-    };
-    const paged = await pagedTable({
-      pageSize,
-      load: (offset) => api("table", { name: state.table, limit: pageSize, offset }),
-      render: (rows) => {
-        const keys = [...new Set(rows.flatMap((row) => Object.keys(row)))];
-        return table({
-          columns: keys.map((key) => ({
-            label: key,
-            num: rows.every((row) => row[key] === null || typeof row[key] === "number"),
-            className: "json",
-            cell: (row) =>
-              h(
-                "span",
-                { title: cellText(row[key]).slice(0, 2000) },
-                cellText(row[key]).slice(0, 200),
-              ),
-          })),
-          rows,
-        });
-      },
-    });
+
     return h(
       "div",
       null,
       sectionHead(
         "Data",
-        "raw rows of the state database (read-only); the schema lives in src/store/migrations.ts",
+        "raw rows of the state database (read-only) · click a row for all its fields",
       ),
       h(
         "div",
@@ -955,9 +1187,21 @@
         list,
         h(
           "div",
-          null,
-          h("h3", { class: "mono", style: "margin-bottom:8px" }, state.table),
-          paged.element,
+          { class: "data-main" },
+          h(
+            "div",
+            { class: "data-head" },
+            h(
+              "div",
+              null,
+              h("h3", { class: "mono" }, name),
+              h("p", { class: "note" }, tableInfo[name] || ""),
+            ),
+            pager,
+          ),
+          page.rows.length === 0
+            ? h("p", { class: "empty" }, "No rows.")
+            : h("div", { class: "data-scroll" }, grid),
         ),
       ),
     );
@@ -976,7 +1220,11 @@
   /** New data arrived while the drawer was open; it refreshes on request only. */
   let drawerStale = false;
 
-  const closeDrawer = () => navigate({ repo: null, symbol: null, symbolKind: "all" });
+  // Repository and symbol drawers live in the URL; a data row drawer does not.
+  const closeDrawer = () =>
+    state.repo || state.symbol
+      ? navigate({ repo: null, symbol: null, symbolKind: "all" })
+      : hideDrawer();
 
   const showDrawer = (title, body) => {
     if (drawer.hidden) lastFocus = document.activeElement;
@@ -1021,7 +1269,20 @@
       if (state.repo) await repoDrawer(state.repo, key);
       else await symbolDrawer(state.symbol, state.symbolKind, key);
     } catch (error) {
-      if (drawerKey === key) showDrawer("Error", h("p", { class: "error" }, error.message));
+      if (drawerKey !== key) return;
+      // A crawled repository outside the processed top-N has no state yet.
+      if (state.repo && error.message === "not found") {
+        showDrawer(
+          "Not processed yet",
+          h(
+            "p",
+            { class: "note" },
+            "This repository was crawled but has not been processed (it is outside the processed top-N, or the run has not reached it yet).",
+          ),
+        );
+      } else {
+        showDrawer("Error", h("p", { class: "error" }, error.message));
+      }
     }
   };
 
