@@ -11,6 +11,7 @@ import {
   type SettingOverrides,
 } from "./config.ts";
 import { makeRunSummary } from "./domain/run-summary.ts";
+import { githubTokenAuth } from "./github/git.ts";
 import { runCrawl } from "./github/search.ts";
 import { runProcess } from "./pipeline/run.ts";
 import { exportAll, printReport } from "./report.ts";
@@ -205,7 +206,7 @@ const processStep = (runId: number) =>
       const reset = yield* store.resetFailures;
       if (reset > 0) yield* Effect.log(`--retry-failed: ${reset} failed repositories re-queued`);
     }
-    return yield* runProcess({
+    const counts = yield* runProcess({
       runId,
       budget: config.repoSearchBudget,
       workDir: paths.workDir,
@@ -221,7 +222,17 @@ const processStep = (runId: number) =>
         excludeRepos: excludedRepos(config),
         excludeEffectPackageDefiners: config.excludeEffectCopies,
       },
+      gitAuth: config.githubApiKey === undefined ? undefined : githubTokenAuth(config.githubApiKey),
     });
+    if (counts.halted !== null) {
+      // The run stays recorded as unfinished (no `finished_at`), which is
+      // what it is; the pending repositories are picked up by the next run.
+      return yield* Effect.fail(
+        `Stopped early: ${counts.notStarted} repositories left pending because GitHub kept refusing clones. ` +
+          "Run the same command again later to continue.",
+      );
+    }
+    return counts;
   });
 
 /**

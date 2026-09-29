@@ -31,8 +31,12 @@ const settings = {
   cachePath: Schema.String.check(Schema.isNonEmpty({ message: "CACHE_PATH must not be empty" })),
   /** In-memory database and a temporary work directory: nothing survives the run. */
   noCache: Schema.Boolean,
-  /** Repositories processed (cloned, selected, analyzed) in parallel. */
-  concurrency: int(1, 64),
+  /**
+   * Repositories processed (cloned, selected, analyzed) in parallel. The work
+   * is network-bound and every clone is a request to GitHub, so more than
+   * 16 only adds pressure (and throttling) without speeding anything up.
+   */
+  concurrency: int(1, 16),
   /** Failed repositories are retried on later runs up to this many attempts. */
   maxAttempts: int(1, 100),
   /** Source files above this size are scanned as text only (usually generated). */

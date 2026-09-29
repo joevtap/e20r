@@ -1,4 +1,5 @@
-import { Cause, Duration, Effect, Fiber, Schedule, Stream } from "effect";
+import { Buffer } from "node:buffer";
+import { Cause, Duration, Effect, Fiber, Redacted, Schedule, Stream } from "effect";
 import type { Scope } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
@@ -23,6 +24,31 @@ export interface CloneTarget {
 
 type Git = ChildProcessSpawner.ChildProcessSpawner;
 
+/**
+ * Credentials for the network steps (clone, and checkouts, which fetch
+ * missing blobs). GitHub throttles anonymous git traffic per IP — past a
+ * few thousand clones it answers every request with an auth challenge —
+ * while authenticated traffic has far higher limits.
+ */
+export interface GitAuth {
+  /** Extra environment for git: never command-line arguments, so never in `ps`. */
+  readonly env: Readonly<Record<string, string>>;
+}
+
+/**
+ * Authenticates git against github.com with a token, as an HTTP header set
+ * through git's environment config (`GIT_CONFIG_*`): nothing is written to
+ * disk or passed on the command line, and the header is only sent to
+ * `https://github.com/`. Any GitHub token can read public repositories.
+ */
+export const githubTokenAuth = (token: Redacted.Redacted<string>): GitAuth => ({
+  env: {
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
+    GIT_CONFIG_VALUE_0: `Authorization: Basic ${Buffer.from(`x-access-token:${Redacted.value(token)}`).toString("base64")}`,
+  },
+});
+
 interface GitOutput {
   readonly stdout: string;
   readonly stderr: string;
@@ -43,6 +69,7 @@ interface GitOutput {
  */
 const gitOutput = (
   args: ReadonlyArray<string>,
+  auth: GitAuth | undefined,
 ): Effect.Effect<GitOutput, string, Git | Scope.Scope> =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -50,7 +77,7 @@ const gitOutput = (
     const handle = yield* spawner.spawn(
       ChildProcess.make("git", [...args], {
         extendEnv: true,
-        env: { GIT_TERMINAL_PROMPT: "0", GIT_LFS_SKIP_SMUDGE: "1" },
+        env: { GIT_TERMINAL_PROMPT: "0", GIT_LFS_SKIP_SMUDGE: "1", ...auth?.env },
       }),
     );
 
@@ -83,10 +110,14 @@ const gitOutput = (
 const gitStep = (
   label: string,
   args: ReadonlyArray<string>,
-  options: { readonly timeout: Duration.Input; readonly retries?: number },
+  options: {
+    readonly timeout: Duration.Input;
+    readonly retries?: number;
+    readonly auth?: GitAuth | undefined;
+  },
 ): Effect.Effect<string, string, Git> =>
   Effect.gen(function* () {
-    const output = yield* gitOutput(args);
+    const output = yield* gitOutput(args, options.auth);
     if (output.exitCode === 0) return output.stdout;
     return yield* Effect.fail(
       `${label} exited with code ${output.exitCode}${output.stderr === "" ? "" : `: ${output.stderr}`}`,
@@ -113,6 +144,7 @@ const gitStep = (
 export const cloneBlobless = (
   repo: CloneTarget,
   targetDir: string,
+  auth?: GitAuth,
 ): Effect.Effect<void, string, Git | FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -133,7 +165,7 @@ export const cloneBlobless = (
         repo.htmlUrl,
         targetDir,
       ],
-      { timeout: "10 minutes", retries: 0 },
+      { timeout: "10 minutes", retries: 0, auth },
     );
   }).pipe(Effect.retry({ times: 2, schedule: Schedule.exponential("1 second") }));
 
@@ -167,14 +199,16 @@ export const lsTree = (cloneDir: string): Effect.Effect<string, string, Git> =>
 export const sparseCheckout = (
   cloneDir: string,
   patterns: ReadonlyArray<string>,
+  auth?: GitAuth,
 ): Effect.Effect<void, string, Git> =>
   Effect.gen(function* () {
     yield* gitStep(
       "git sparse-checkout",
       ["-C", cloneDir, "sparse-checkout", "set", "--no-cone", "--", ...patterns],
-      { timeout: "10 minutes" },
+      { timeout: "10 minutes", auth },
     );
     yield* gitStep("git checkout", ["-C", cloneDir, "checkout", "--quiet"], {
       timeout: "10 minutes",
+      auth,
     });
   });

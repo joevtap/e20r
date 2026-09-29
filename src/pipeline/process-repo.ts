@@ -12,7 +12,13 @@ import {
   sourceFiles,
 } from "../deep-analysis/tree.ts";
 import { isEffectAdopter } from "../domain/selection.ts";
-import { cloneBlobless, lsTree, revParseHead, sparseCheckout } from "../github/git.ts";
+import {
+  cloneBlobless,
+  lsTree,
+  revParseHead,
+  sparseCheckout,
+  type GitAuth,
+} from "../github/git.ts";
 import { Store, strongestField, type RepoOutcome, type RepoRecord } from "../store/store.ts";
 import { exclusionReason, type ExclusionOptions } from "./exclusion.ts";
 
@@ -26,6 +32,8 @@ export interface ProcessRepoOptions {
   readonly skipAnalysis: boolean;
   readonly maxParseBytes: number;
   readonly exclusion: ExclusionOptions;
+  /** Credentials for the network steps; anonymous when undefined. */
+  readonly gitAuth: GitAuth | undefined;
 }
 
 export type ProcessRepoResult =
@@ -94,7 +102,7 @@ export const processRepo = (
       });
 
     const run = Effect.gen(function* () {
-      yield* stage("clone", cloneBlobless(repo, dir));
+      yield* stage("clone", cloneBlobless(repo, dir, options.gitAuth));
       const commit = yield* stage("clone", revParseHead(dir));
 
       const tree = parseLsTree(yield* stage("tree", lsTree(dir)));
@@ -102,7 +110,7 @@ export const processRepo = (
       const packageDirs = new Set(manifestFiles.map(directoryOf));
       const files = sourceFiles(tree, packageDirs);
 
-      yield* stage("checkout-manifests", sparseCheckout(dir, selectionPatterns));
+      yield* stage("checkout-manifests", sparseCheckout(dir, selectionPatterns, options.gitAuth));
       const manifests = yield* readManifests(dir, manifestFiles);
       const signals = yield* selectionSignals({ cloneDir: dir, tree, manifests });
 
@@ -114,7 +122,10 @@ export const processRepo = (
 
       const analysis = analyze
         ? yield* Effect.gen(function* () {
-            yield* stage("checkout-sources", sparseCheckout(dir, analysisPatterns));
+            yield* stage(
+              "checkout-sources",
+              sparseCheckout(dir, analysisPatterns, options.gitAuth),
+            );
             return yield* stage(
               "analyze",
               analyzeSources(dir, files, { maxParseBytes: options.maxParseBytes }),

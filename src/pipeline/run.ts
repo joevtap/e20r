@@ -3,6 +3,7 @@ import type { ChildProcessSpawner } from "effect/unstable/process";
 import type { SqlError } from "effect/unstable/sql/SqlError";
 import { ANALYZER_VERSION } from "../deep-analysis/analyze.ts";
 import { Store, type PriorState } from "../store/store.ts";
+import type { GitAuth } from "../github/git.ts";
 import type { ExclusionOptions } from "./exclusion.ts";
 import { processRepo } from "./process-repo.ts";
 
@@ -22,6 +23,8 @@ export interface ProcessRunOptions {
   readonly keepClones: boolean;
   readonly maxParseBytes: number;
   readonly exclusion: ExclusionOptions;
+  /** Credentials for clones and checkouts; anonymous when undefined. */
+  readonly gitAuth: GitAuth | undefined;
 }
 
 export interface ProcessRunCounts {
@@ -31,7 +34,65 @@ export interface ProcessRunCounts {
   readonly committed: number;
   readonly failed: number;
   readonly byStatus: Readonly<Record<string, number>>;
+  /** Set when the run stopped early: every clone kept failing (see the breaker). */
+  readonly halted: string | null;
+  /** Repositories of the queue never started (they stay pending for the next run). */
+  readonly notStarted: number;
 }
+
+/** Stages that talk to GitHub: a streak of failures there means GitHub, not the repos. */
+export const networkStages: ReadonlySet<string> = new Set([
+  "clone",
+  "checkout-manifests",
+  "checkout-sources",
+]);
+
+export type BreakerEvent =
+  | { readonly _tag: "pause"; readonly millis: number; readonly trip: number }
+  | { readonly _tag: "halt" };
+
+/**
+ * The network circuit breaker. After `streak` consecutive network failures
+ * (GitHub throttling, or the network gone), no new repository starts for a
+ * cool-down that doubles each time (2, 4, 8… up to 30 minutes); any success
+ * resets it. After `maxTrips` cool-downs in a row without a single success
+ * the run stops, leaving the rest of the queue pending, instead of marking
+ * thousands of healthy repositories as failed. Failures that land during a
+ * cool-down (repositories already in flight when it started) do not count.
+ */
+export const makeBreaker = (
+  options: { readonly streak: number; readonly maxTrips: number } = { streak: 12, maxTrips: 5 },
+  now: () => number = Date.now,
+) => {
+  let streak = 0;
+  let trips = 0;
+  let pausedUntil = 0;
+  let halted = false;
+  return {
+    get halted() {
+      return halted;
+    },
+    /** How long a repository about to start has to wait (0 = go). */
+    waitMillis: (): number => Math.max(0, pausedUntil - now()),
+    onSuccess: (): void => {
+      streak = 0;
+      trips = 0;
+    },
+    onNetworkFailure: (): BreakerEvent | undefined => {
+      if (halted || now() < pausedUntil) return undefined;
+      if (++streak < options.streak) return undefined;
+      streak = 0;
+      trips++;
+      if (trips > options.maxTrips) {
+        halted = true;
+        return { _tag: "halt" };
+      }
+      const millis = Math.min(2 * 60_000 * 2 ** (trips - 1), 30 * 60_000);
+      pausedUntil = now() + millis;
+      return { _tag: "pause", millis, trip: trips };
+    },
+  };
+};
 
 type Decision = "process" | "up-to-date" | "gave-up";
 
@@ -105,11 +166,29 @@ export const runProcess = (
 
     const progress = { done: 0, failed: 0, started: Date.now(), lastRollup: Date.now() };
     const byStatus: Record<string, number> = {};
+    const breaker = makeBreaker();
+    let halted: string | null = null;
+    let notStarted = 0;
+
+    if (options.gitAuth === undefined) {
+      yield* Effect.logWarning(
+        "Cloning anonymously: GitHub throttles anonymous git per IP after a few thousand clones. Set GITHUB_API_KEY to authenticate git.",
+      );
+    }
 
     yield* Stream.fromIterable(queue).pipe(
       Stream.mapEffect(
         (repo) =>
           Effect.gen(function* () {
+            // Wait out a cool-down; once halted, the rest of the queue is left pending.
+            while (!breaker.halted && breaker.waitMillis() > 0) {
+              yield* Effect.sleep(Math.min(breaker.waitMillis(), 5_000));
+            }
+            if (breaker.halted) {
+              notStarted++;
+              return;
+            }
+
             const result = yield* processRepo(repo, {
               runId: options.runId,
               workDir: options.workDir,
@@ -117,7 +196,26 @@ export const runProcess = (
               skipAnalysis: options.skipAnalysis,
               maxParseBytes: options.maxParseBytes,
               exclusion: options.exclusion,
+              gitAuth: options.gitAuth,
             });
+
+            if (result._tag === "failed" && networkStages.has(result.stage)) {
+              const event = breaker.onNetworkFailure();
+              if (event?._tag === "halt") {
+                halted = result.error;
+                yield* Effect.logError(
+                  `Stopping: GitHub still refuses clones after repeated cool-downs (last error: ${result.error}). ` +
+                    "The remaining repositories stay pending; run the same command again later.",
+                );
+              } else if (event?._tag === "pause") {
+                yield* Effect.logWarning(
+                  `Clones keep failing (${result.error}); pausing new clones for ` +
+                    `${Math.round(event.millis / 60_000)} min (cool-down ${event.trip}).`,
+                );
+              }
+            } else if (result._tag === "committed") {
+              breaker.onSuccess();
+            }
             const where = `[${++progress.done}/${queue.length}]`;
             if (result._tag === "failed") {
               progress.failed++;
@@ -159,5 +257,7 @@ export const runProcess = (
       committed: progress.done - progress.failed,
       failed: progress.failed,
       byStatus,
+      halted,
+      notStarted,
     };
   });

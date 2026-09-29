@@ -116,10 +116,10 @@ Flags that change this:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `GITHUB_API_KEY` | (none) | Required for crawling |
+| `GITHUB_API_KEY` | (none) | Required for crawling; also authenticates clones (see below) |
 | `REPO_SEARCH_BUDGET` | `5000` | Top repositories to process (up to 30,000) |
 | `CACHE_PATH` | `.e20r` | Database and work directory |
-| `CONCURRENCY` | `4` | Repositories in parallel (1–64); the work is network-bound, so 8–16 is fine |
+| `CONCURRENCY` | `4` | Repositories in parallel (1–16); network-bound, 4–8 is a good range |
 | `MAX_ATTEMPTS` | `3` | Attempts before a failing repository is given up on |
 | `MAX_PARSE_BYTES` | `1000000` | Larger files get their imports scanned as text, with no symbol counts |
 | `EXCLUDE_REPOS` | (empty) | Comma-separated `owner/name` list kept out of the deep analysis |
@@ -127,6 +127,17 @@ Flags that change this:
 | `NO_CACHE` | `false` | Same as `--no-cache` |
 
 Command-line flags override `.env`.
+
+**GitHub throttling.** GitHub rate-limits git traffic per IP, and anonymous
+clones hit that limit after a few thousand (every clone then fails with
+`could not read Username … terminal prompts disabled`). With
+`GITHUB_API_KEY` set, clones and checkouts are authenticated, which raises
+the limit a lot. The token travels as an HTTP header set through git's
+environment config: never on the command line, never on disk, only to
+`https://github.com/`. If clones still fail in a row, a circuit breaker
+pauses new clones (2, 4, 8 … up to 30 minutes, reset by any success) and,
+after five pauses without a success, stops the run, leaving the rest
+pending. Failed repositories are retried by the next run.
 
 ## The data
 
