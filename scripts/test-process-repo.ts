@@ -7,7 +7,7 @@
 //
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import { Effect, FileSystem, Redacted } from "effect";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 import { execFileSync } from "node:child_process";
 import { githubTokenAuth } from "../src/github/git.ts";
 import { processRepo } from "../src/pipeline/process-repo.ts";
