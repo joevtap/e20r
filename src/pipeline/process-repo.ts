@@ -51,7 +51,7 @@ export type ProcessRepoResult =
       readonly millis: number;
     };
 
-/** A failed stage: its name selects the error record (`error_stage`) and tells the network breaker apart. */
+/** A pipeline stage failed: its name is stored as `error_stage`, and only network stages feed the clone circuit breaker. */
 class StageError {
   readonly _tag = "StageError";
   constructor(
