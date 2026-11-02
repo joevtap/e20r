@@ -5,7 +5,7 @@ import {
   HttpClientError,
   HttpClientRequest,
   HttpClientResponse,
-} from "effect/unstable/http";
+} from "effect/http";
 import { GithubRepoSearchResponseSchema } from "../domain/github.ts";
 import { Store, type CrawlCursor, type CrawlState } from "../store/store.ts";
 

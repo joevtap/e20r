@@ -1,7 +1,7 @@
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import { Context, Effect, FileSystem, Layer, Option, Path } from "effect";
-import { Command, Flag } from "effect/unstable/cli";
-import { FetchHttpClient } from "effect/unstable/http";
+import { Command, Flag } from "effect/cli";
+import { FetchHttpClient } from "effect/http";
 import {
   AppConfig,
   AppConfigLayer,
@@ -21,63 +21,63 @@ import { Store } from "./store/store.ts";
 // ---- flags ----
 
 const flag = {
-  repoSearchBudget: Flag.integer("repo-search-budget").pipe(
+  repoSearchBudget: Flag.Int("repo-search-budget").pipe(
     Flag.withAlias("b"),
     Flag.withDescription("Number of top TypeScript repositories to process"),
     Flag.optional,
   ),
-  cachePath: Flag.string("cache-path").pipe(
+  cachePath: Flag.String("cache-path").pipe(
     Flag.withDescription("Directory holding the state database (e20r.db) and the work directory"),
     Flag.optional,
   ),
-  noCache: Flag.boolean("no-cache").pipe(
+  noCache: Flag.Boolean("no-cache").pipe(
     Flag.withDescription(
       "In-memory database and a temporary work directory; nothing survives the run",
     ),
     Flag.optional,
   ),
-  clean: Flag.boolean("clean").pipe(
+  clean: Flag.Boolean("clean").pipe(
     Flag.withDescription("Wipe the state database and the work directory before the run"),
     Flag.optional,
   ),
-  recrawl: Flag.boolean("recrawl").pipe(
+  recrawl: Flag.Boolean("recrawl").pipe(
     Flag.withDescription("Discard the crawl cursor and crawl again from the top"),
     Flag.optional,
   ),
-  concurrency: Flag.integer("concurrency").pipe(
+  concurrency: Flag.Int("concurrency").pipe(
     Flag.withAlias("c"),
     Flag.withDescription("Repositories processed (cloned, selected, analyzed) in parallel"),
     Flag.optional,
   ),
-  fresh: Flag.boolean("fresh").pipe(
+  fresh: Flag.Boolean("fresh").pipe(
     Flag.withDescription("Re-process every repository, whatever its recorded state"),
     Flag.optional,
   ),
-  retryFailed: Flag.boolean("retry-failed").pipe(
+  retryFailed: Flag.Boolean("retry-failed").pipe(
     Flag.withDescription("Retry failed repositories even past --max-attempts"),
     Flag.optional,
   ),
-  reanalyze: Flag.boolean("reanalyze").pipe(
+  reanalyze: Flag.Boolean("reanalyze").pipe(
     Flag.withDescription("Re-process adopters recorded by an older analyzer version"),
     Flag.optional,
   ),
-  maxAttempts: Flag.integer("max-attempts").pipe(
+  maxAttempts: Flag.Int("max-attempts").pipe(
     Flag.withDescription("Attempts before a failing repository is given up on"),
     Flag.optional,
   ),
-  maxParseBytes: Flag.integer("max-parse-bytes").pipe(
+  maxParseBytes: Flag.Int("max-parse-bytes").pipe(
     Flag.withDescription("Source files above this size are scanned as text only"),
     Flag.optional,
   ),
-  excludeRepos: Flag.string("exclude-repos").pipe(
+  excludeRepos: Flag.String("exclude-repos").pipe(
     Flag.withDescription("Comma-separated owner/name list kept out of the deep analysis"),
     Flag.optional,
   ),
-  skipAnalysis: Flag.boolean("skip-analysis").pipe(
+  skipAnalysis: Flag.Boolean("skip-analysis").pipe(
     Flag.withDescription("Stop adopters at selection (no deep analysis)"),
     Flag.optional,
   ),
-  keepClones: Flag.boolean("keep-clones").pipe(
+  keepClones: Flag.Boolean("keep-clones").pipe(
     Flag.withDescription("Keep work directories after processing (debugging only)"),
     Flag.optional,
   ),
@@ -284,7 +284,7 @@ const exportCommand = Command.make(
   "export",
   {
     cachePath: flag.cachePath,
-    out: Flag.string("out").pipe(
+    out: Flag.String("out").pipe(
       Flag.withDescription("Output directory (default: <cache-path>/export)"),
       Flag.optional,
     ),
@@ -304,11 +304,8 @@ const viewBase = Command.make(
   "view",
   {
     cachePath: flag.cachePath,
-    port: Flag.integer("port").pipe(
-      Flag.withDescription("Port to listen on"),
-      Flag.withDefault(4173),
-    ),
-    host: Flag.string("host").pipe(
+    port: Flag.Int("port").pipe(Flag.withDescription("Port to listen on"), Flag.withDefault(4173)),
+    host: Flag.String("host").pipe(
       Flag.withDescription("Interface to bind (0.0.0.0 to share on the network)"),
       Flag.withDefault("127.0.0.1"),
     ),

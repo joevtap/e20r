@@ -1,5 +1,5 @@
 import { Effect, FileSystem, Path } from "effect";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 import { Store } from "./store/store.ts";
 
 const percent = (numerator: number, denominator: number): string =>

@@ -3,6 +3,8 @@ allowBuilds:
   esbuild: true
   msgpackr-extract: true
 minimumReleaseAgeExclude:
-  - '@effect/platform-node-shared@4.0.0-rc.110'
-  - '@effect/platform-node@4.0.0-rc.110'
-  - effect@4.0.0-rc.110
+  - '@effect/platform-node-shared@4.1.2'
+  - '@effect/platform-node@4.1.2'
+  - '@effect/sql-sqlite-node@4.1.2'
+  - '@effect/vitest@4.1.2'
+  - effect@4.1.2

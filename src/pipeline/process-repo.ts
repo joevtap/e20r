@@ -1,5 +1,5 @@
 import { Effect, FileSystem, Path } from "effect";
-import type { ChildProcessSpawner } from "effect/unstable/process";
+import type { ChildProcessSpawner } from "effect/process";
 import { effectRefs, readManifests } from "../analysis/package-json.ts";
 import { selectionSignals } from "../analysis/select.ts";
 import { ANALYZER_VERSION, analyzeSources, inventoryTotals } from "../deep-analysis/analyze.ts";

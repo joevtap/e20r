@@ -2,7 +2,7 @@ import { Buffer } from "node:buffer";
 import { Cause, Duration, Effect, Fiber, Redacted, Schedule, Stream } from "effect";
 import type { Scope } from "effect";
 import * as FileSystem from "effect/FileSystem";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 /**
  * Git plumbing for the per-repository pipeline. Clones are blobless and

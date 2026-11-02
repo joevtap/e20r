@@ -1,6 +1,6 @@
-import { Context, DateTime, Effect, Layer, Option, Schema } from "effect";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
-import type { SqlError } from "effect/unstable/sql/SqlError";
+import { Array as Arr, Context, DateTime, Effect, Layer, Option, Schema } from "effect";
+import * as SqlClient from "effect/sql/SqlClient";
+import type { SqlError } from "effect/sql/SqlError";
 import type { EffectFileRow, FileTotalsRow } from "../deep-analysis/analyze.ts";
 import { GithubRepoSchema, type GithubRepo } from "../domain/github.ts";
 import type { DependencyField, Signal } from "../domain/selection.ts";
@@ -165,9 +165,13 @@ export const StoreLayer = Layer.effect(
       table: string,
       rows: ReadonlyArray<Record<string, unknown>>,
     ): Effect.Effect<void, SqlError> =>
-      Effect.forEach(chunk(rows), (batch) => sql`INSERT INTO ${sql(table)} ${sql.insert(batch)}`, {
-        discard: true,
-      });
+      Effect.forEach(
+        Arr.filter(chunk(rows), Arr.isReadonlyArrayNonEmpty),
+        (batch) => sql`INSERT INTO ${sql(table)} ${sql.insert(batch)}`,
+        {
+          discard: true,
+        },
+      );
 
     const crawlState = Effect.map(
       sql<{
@@ -210,9 +214,9 @@ export const StoreLayer = Layer.effect(
         const knownIds = new Set(known.map((row) => row.id));
 
         for (const batch of chunk(repos)) {
-          if (batch.length === 0) continue;
+          if (!Arr.isReadonlyArrayNonEmpty(batch)) continue;
           yield* sql`INSERT INTO repos ${sql.insert(
-            batch.map((repo) => ({
+            Arr.map(batch, (repo) => ({
               id: repo.id,
               fullName: repo.fullName,
               owner: repo.owner.login,

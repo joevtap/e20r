@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Duration, Effect } from "effect";
-import { Headers } from "effect/unstable/http";
+import { Headers } from "effect/http";
 import { makePacer, rateLimitWait } from "../src/github/search.ts";
 
 const seconds = (headers: Record<string, string>, now = 1_000_000_000) =>

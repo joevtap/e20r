@@ -1,6 +1,6 @@
 import { Effect, FileSystem, Path, Stream } from "effect";
-import type { ChildProcessSpawner } from "effect/unstable/process";
-import type { SqlError } from "effect/unstable/sql/SqlError";
+import type { ChildProcessSpawner } from "effect/process";
+import type { SqlError } from "effect/sql/SqlError";
 import { ANALYZER_VERSION } from "../deep-analysis/analyze.ts";
 import { Store, type PriorState } from "../store/store.ts";
 import type { GitAuth } from "../github/git.ts";
