@@ -20,7 +20,7 @@ and scroll position and show a **New data · Refresh** button instead.
 | View | What it answers |
 | --- | --- |
 | **Overview** | Who adopts Effect (funnel, adoption by popularity band, how `effect` is declared, major versions), how deeply (share of TypeScript files per repository, where Effect lives by file role, imports per file) and what they use (packages and symbols by breadth), plus the ratios over runs. |
-| **Repositories** | Every processed repository, sortable on the server (stars, status, TS files, Effect files, depth, share of lines, Effect packages). A row opens its drawer. |
+| **Repositories** | Every processed repository, sortable on the server (stars, name, status, last update, TS files, Effect files, depth, share of lines, Effect packages). A row opens its drawer. |
 | **Symbols** | Every `symbol × position` pair with the repositories, files and usages behind it. A row opens the repositories that use the symbol. |
 | **Files** | Every Effect file of the filtered repositories with its most used symbols inline (calls as `fn()`, types as `: T`), searchable by path and by "uses symbol" (e.g. every file calling `Layer.effect`). A row expands into the file's complete symbol list and its imports; **Download CSV** exports the selection as one line per file × symbol. |
 | **Data** | Raw rows of every table and aggregation view, with a description of each: paged (100 rows, first / previous / next / last), sortable by any column, in a scroll box with a pinned header. A row opens all its fields in the drawer (JSON pretty-printed); repository ids open the repository. |
@@ -60,7 +60,7 @@ hash, so any view can be bookmarked or shared, and Back works.
 | `index.html` | Page structure: top bar, filter row, view container, drawer, tooltip. |
 | `style.css` | Tokens (the dataviz reference palette, light and dark via the OS or the theme toggle) and layout. |
 | `charts.js` | `Viz.h` (DOM builder: all text goes through `textContent`) and the chart primitives: bars, columns, trend with crosshair. Hover and keyboard focus show the same tooltip; values are always direct-labeled. |
-| `app.js` | Routing (URL hash), API calls, the four views, the drawers, live polling and the theme toggle. |
+| `app.js` | Routing (URL hash), API calls, the five views, the drawers, live polling and the theme toggle. |
 
 ## API
 
