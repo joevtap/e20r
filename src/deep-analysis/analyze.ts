@@ -141,11 +141,12 @@ type FileOutcome =
  * non-declaration file is read whole once, measured (LOC), classified as
  * generated when its header says so (on top of the path role), and — when
  * its text mentions `effect` at all, a necessary condition for any Effect
- * module specifier — parsed for imports and symbol usages. Each file's
- * contents are dropped once it is processed (eight files in flight at a
- * time), but the per-file rows are accumulated for the whole repository,
- * so peak memory grows with the repository's per-file results, not with
- * the read concurrency alone.
+ * module specifier — analyzed for imports and symbol usages: parsed with
+ * the AST parser, or scanned as text for imports only (no symbols) when
+ * it exceeds `maxParseBytes`. Each file's contents are dropped once it is
+ * processed (eight files in flight at a time), but the per-file rows are
+ * accumulated for the whole repository, so peak memory grows with the
+ * repository's per-file results, not with the read concurrency alone.
  */
 export const analyzeSources = (
   cloneDir: string,

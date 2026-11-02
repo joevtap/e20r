@@ -100,7 +100,7 @@ export { param };
 
 const ratio = (part: number, whole: number): number => (whole === 0 ? 0 : part / whole);
 
-/** A SQL aggregate as a number: null (no rows) and non-numeric values become 0. */
+/** An SQL aggregate as a number: null and non-numeric text become 0; numbers are returned unchanged, NaN included. */
 const num = (value: unknown): number =>
   typeof value === "number" ? value : Number(value ?? 0) || 0;
 

@@ -145,7 +145,7 @@ export const strongestField = (fields: ReadonlyArray<DependencyField>): Dependen
     null,
   );
 
-/** The child tables keyed by `repo_id`, wiped on every commit so a re-processed repository leaves no stale rows. */
+/** The child tables keyed by `repo_id`: when a repository commits, its old rows are deleted from all of them first, so a re-processed repository leaves no stale rows. */
 const childTables = [
   "manifest_deps",
   "catalog_versions",

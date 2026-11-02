@@ -59,9 +59,11 @@ were in flight are processed again.
    - an **analysis checkout** of the TypeScript sources (plus the
      selection files), for the remaining adopters, then the
      **deep analysis**. Every file is read once and measured (LOC), and
-     every file whose text mentions `effect` at all is parsed with
-     [oxc](https://oxc.rs); its imports and symbol usages are counted, with
-     aliases resolved (`Effect as E; E.gen()` counts as `Effect.gen`);
+     every file whose text mentions `effect` at all is counted: parsed
+     with [oxc](https://oxc.rs), or — above `MAX_PARSE_BYTES` — scanned
+     as text for its imports only (no symbol counts). Imports and symbol
+     usages are counted with aliases resolved
+     (`Effect as E; E.gen()` counts as `Effect.gen`);
    - **one transaction** commits everything the repository contributes,
      then the work directory is deleted.
 
