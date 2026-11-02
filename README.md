@@ -15,21 +15,31 @@ no permissions, the token only raises the rate limit).
 
 ```sh
 pnpm install
-cp .env.example .env      # set GITHUB_API_KEY, and REPO_SEARCH_BUDGET / CONCURRENCY
+cp .env.example .env      # set GITHUB_API_KEY; this example selects budget 1200
 pnpm build
-pnpm e20r run             # crawl, then process every repository that needs work
+pnpm e20r run --concurrency 2   # crawl, then process; measure capacity first
 pnpm e20r view            # browse the results: http://127.0.0.1:4173/
 ```
 
-For a long run, start it in something that outlives your terminal:
+Read the [operating guide](docs/operations.md) before a long or agent-run
+job. It covers capacity checks, disk-backed isolated caches, process limits,
+monitoring, timed interruption and resume. The code defaults to budget
+5,000 and concurrency 4; the example configuration selects budget 1,200.
+Concurrency 2 is a cautious starting point, subject to fresh measurements.
+
+For a long run, start it in something that outlives your terminal, using
+the cache and concurrency chosen in that guide:
 
 ```sh
-tmux new -s e20r 'pnpm e20r run 2>&1 | tee -a run.log'
+mkdir -p "$HOME/e20r-runs/logs"
+tmux new -s e20r 'pnpm e20r run --concurrency 2 --cache-path "$HOME/e20r-runs/cache" >>"$HOME/e20r-runs/logs/run.log" 2>&1'
 ```
 
-Stopping is safe at any point (Ctrl-C, a crash, a reboot). Run the same
-command again and it continues where it stopped. Only the repositories that
-were in flight are processed again.
+Interrupt with Ctrl-C or SIGINT and allow cleanup to finish. Committed
+crawl pages and repository transactions are the resume source; unfinished
+work is repeated. A crash or forced kill can leave work directories and an
+unfinished run record. Resume with the same persistent cache after checking
+shutdown; see the [stop/resume procedure](docs/operations.md#after-stop-verify-and-resume).
 
 ## How it works
 
@@ -80,9 +90,14 @@ Every file gets a **role**:
   the like;
 - `source` for everything else.
 
-Disk usage stays around `CONCURRENCY` × the largest sparse checkout. The
-database grows mostly with the adopters' per-file rows (310 repositories
-take about 12 MB).
+Resource usage depends on repository size and adoption depth. Each analyzing
+repository reads up to 8 whole source files concurrently, including files
+above `MAX_PARSE_BYTES`, and retains per-file results until the repository
+transaction completes. Git children, tree inventories, parser allocations,
+SQLite and filesystem cache add overhead. Sparse checkouts also retain Git
+objects and indexes; checkout size alone does not predict disk usage.
+Measure the entire process tree and cache, including database journals and
+logs. See the [resource model and tuning guidance](docs/operations.md#resource-model-and-tuning).
 
 ## Commands
 
@@ -126,14 +141,24 @@ Flags that change this:
 | `GITHUB_API_KEY` | (none) | Required for crawling; also authenticates clones (see below) |
 | `REPO_SEARCH_BUDGET` | `5000` | Top repositories to process (up to 30,000) |
 | `CACHE_PATH` | `.e20r` | Database and work directory |
-| `CONCURRENCY` | `4` | Repositories in parallel (1–16); network-bound, 4–8 is a good range |
+| `CONCURRENCY` | `4` | Repositories in parallel (1–16); choose from measured host headroom and whole-process-tree usage |
 | `MAX_ATTEMPTS` | `3` | Attempts before a failing repository is given up on |
-| `MAX_PARSE_BYTES` | `1000000` | Larger files get their imports scanned as text, with no symbol counts |
+| `MAX_PARSE_BYTES` | `1000000` | Larger files are still read whole; imports scanned as text, with no symbol counts; not a memory limit |
 | `EXCLUDE_REPOS` | (empty) | Comma-separated `owner/name` list kept out of the deep analysis |
 | `EXCLUDE_EFFECT_COPIES` | `true` | Exclude repositories that define `effect` / `@effect/*` packages |
 | `NO_CACHE` | `false` | Same as `--no-cache` |
 
-Command-line flags override `.env`.
+These are **code defaults**, not the values selected by copying
+`.env.example` (whose budget is `1200`). `src/config.ts` uses Effect's
+`ConfigProvider.fromDotEnv()` with constant-case keys: it reads `.env` in
+the process working directory, without merging `process.env` or expanding
+variables. The file must exist and contain a recognized entry (an entirely
+empty file currently fails decoding); absent settings use code defaults.
+Command flags override the decoded settings, but an invalid `.env` can fail before
+the overlay is applied. Exporting `CONCURRENCY=1` or `GITHUB_API_KEY` in the
+shell does not configure this provider. For a defaults run, use a private
+credential-only `.env`, an absolute cache path and explicit concurrency as
+shown in the [operating guide](docs/operations.md#before-prepare-an-isolated-run).
 
 **GitHub throttling.** GitHub rate-limits git traffic per IP, and anonymous
 clones hit that limit after a few thousand (every clone then fails with
