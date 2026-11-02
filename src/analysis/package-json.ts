@@ -2,10 +2,7 @@ import { Array, Effect, Option, Path, Schema } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import type { DependencyField, EffectVersion } from "../domain/selection.ts";
 
-/**
- * The subset of a `package.json` manifest this application cares about.
- * Everything else is ignored; unknown keys decode fine and get dropped.
- */
+/** A dependency field of a manifest: package name -> version specifier. */
 export const DependencyMapSchema = Schema.Record(Schema.String, Schema.String);
 
 const WorkspacesObjectSchema = Schema.Struct({
@@ -14,6 +11,7 @@ const WorkspacesObjectSchema = Schema.Struct({
   catalogs: Schema.optionalKey(Schema.Record(Schema.String, DependencyMapSchema)),
 });
 
+/** The subset of a `package.json` manifest this application cares about; unknown keys decode fine and get dropped. */
 export const PackageJsonManifestSchema = Schema.Struct({
   name: Schema.optionalKey(Schema.String),
   dependencies: Schema.optionalKey(DependencyMapSchema),

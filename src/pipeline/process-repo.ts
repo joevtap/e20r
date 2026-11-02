@@ -51,6 +51,7 @@ export type ProcessRepoResult =
       readonly millis: number;
     };
 
+/** A failed stage: its name selects the error record (`error_stage`) and tells the network breaker apart. */
 class StageError {
   readonly _tag = "StageError";
   constructor(

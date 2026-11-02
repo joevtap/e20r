@@ -224,8 +224,8 @@ const processStep = (runId: number) =>
       gitAuth: config.githubApiKey === undefined ? undefined : githubTokenAuth(config.githubApiKey),
     });
     if (counts.halted !== null) {
-      // The run stays recorded as unfinished (no `finished_at`), which is
-      // what it is; the pending repositories are picked up by the next run.
+      // No `finished_at` on the run's row: it stays unfinished, and the
+      // pending repositories are picked up by the next run.
       return yield* Effect.fail(
         `Stopped early: ${counts.notStarted} repositories left pending because GitHub kept refusing clones. ` +
           "Run the same command again later to continue.",

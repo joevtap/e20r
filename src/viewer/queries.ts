@@ -90,6 +90,7 @@ export const parseFilters = (params: Params): Filters => ({
   kind: oneOf(symbolKinds, param(params, "kind"), defaultFilters.kind) as SymbolKindFilter,
 });
 
+/** Paging parameters; anything invalid falls back to its default, and `limit` is capped at 1000 (0 -> the default). */
 export const parsePage = (params: Params, defaultLimit = 100) => ({
   limit: nonNegativeInt(param(params, "limit"), defaultLimit, 1000) || defaultLimit,
   offset: nonNegativeInt(param(params, "offset"), 0),
@@ -99,6 +100,7 @@ export { param };
 
 const ratio = (part: number, whole: number): number => (whole === 0 ? 0 : part / whole);
 
+/** A SQL aggregate as a number: null (no rows) and non-numeric values become 0. */
 const num = (value: unknown): number =>
   typeof value === "number" ? value : Number(value ?? 0) || 0;
 
@@ -623,6 +625,7 @@ export const repositories = (
     return { total: total?.rows ?? 0, rows };
   });
 
+/** Everything the repository drawer shows: the `repo_state` row joined with `repos`, the selection evidence, per-role totals, workspace packages, files and usage summaries. `undefined` when the repository has no recorded state. */
 export const repository = (repoId: number, filters: Filters) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;

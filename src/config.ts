@@ -1,10 +1,11 @@
 import { Config, ConfigProvider, Context, Effect, Layer, Option, Schema } from "effect";
 
 /**
- * GitHub API key for authenticated search requests. Only the crawl needs
- * it, so it is optional here and required where it is used.
+ * GitHub API key. Required to crawl; when present it also authenticates
+ * clones (GitHub throttles anonymous git per IP). Any token works: search
+ * needs no permissions. It is optional here and required where it is used.
  *
- * It can be generated accessing: https://github.com/settings/personal-access-tokens/
+ * Generate one at: https://github.com/settings/personal-access-tokens/
  */
 const GithubApiKeySchema = Schema.Redacted(
   Schema.String.check(Schema.isNonEmpty({ message: "GITHUB_API_KEY must not be empty" })),
