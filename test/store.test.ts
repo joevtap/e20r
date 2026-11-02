@@ -1,7 +1,7 @@
 import { NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 import { makeDatabaseLayer } from "../src/store/db.ts";
 import { Store, type RepoOutcome } from "../src/store/store.ts";
 

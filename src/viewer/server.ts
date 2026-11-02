@@ -3,13 +3,8 @@ import { fileURLToPath } from "node:url";
 import { NodeHttpServer } from "@effect/platform-node";
 import { SqliteClient } from "@effect/sql-sqlite-node";
 import { Data, Effect, FileSystem, Layer, String as Str } from "effect";
-import {
-  HttpRouter,
-  HttpServerRequest,
-  HttpServerResponse,
-  HttpStaticServer,
-} from "effect/unstable/http";
-import type * as SqlClient from "effect/unstable/sql/SqlClient";
+import { HttpRouter, HttpServerRequest, HttpServerResponse, HttpStaticServer } from "effect/http";
+import type * as SqlClient from "effect/sql/SqlClient";
 import {
   browsableTables,
   fileSorts,
