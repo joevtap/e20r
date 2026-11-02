@@ -210,7 +210,9 @@ rg 'Page |Crawl complete|Processing |progress |failed at|rate limit|pausing new 
 
 Identify Node and Git descendants from the cgroup and process tree; sum RSS
 as an approximation (shared pages can be counted twice), and use cgroup
-memory/CPU counters for the whole job. `pidstat`/`htop` are optional; `ps`,
+memory/CPU counters for the whole job. Node 24 can appear as `MainThread` in
+`comm`; identify the main process by the unit's MainPID, not just its name.
+`pidstat`/`htop` are optional; `ps`,
 `top`, `vmstat`, `/proc` and cgroup counters suffice when they are absent.
 Log samples with timestamps. For automatic unattended runs, use a watchdog
 that samples those reserves and requests service stop on the exact criteria
@@ -313,8 +315,14 @@ Report elapsed crawl and processing time separately, counts by status,
 failures/throttling, whole-job memory/CPU peaks, minimum available RAM/disk,
 swap activity, final cache/log sizes, runtime version, settings, stop reason
 and shutdown verification. A short or crawl-only sample may not support an
-ETA. State that limitation; the CLI's running average mixes repository sizes
-and failures and is not evidence for an extrapolated full-run duration.
+ETA; say so when processing evidence is insufficient. With substantial
+processing and some adopters observed, give a provisional estimate under
+the measured throughput and repository mix, with the sample counts, time
+window and uncertainty explicit. A mostly non-adopter mix is expected and
+does not alone rule out an estimate. Separate crawl time and failures;
+the CLI's running average mixes repository sizes and failures. Such an
+estimate is conditional on host/network conditions and the remaining mix,
+not a reliable prediction of the full population or of adopter peak RAM.
 
 Implementation references: [configuration](../src/config.ts),
 [command/runtime wiring](../src/index.ts),
