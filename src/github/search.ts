@@ -138,6 +138,7 @@ export interface CrawlOptions {
   readonly recrawl: boolean;
 }
 
+/** The tally of one `runCrawl` (`skipped`: the crawl was already complete for at least this budget). */
 export interface CrawlSummary {
   readonly pages: number;
   readonly newRepos: number;

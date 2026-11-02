@@ -41,6 +41,7 @@ export interface FileTotalsRow {
   readonly loc: number | null;
   /** Files with at least one Effect import; null when not analyzed. */
   readonly effectFiles: number | null;
+  /** LOC of the Effect files; null when not analyzed. */
   readonly effectLoc: number | null;
   /** Files above the parse size limit (scanned as text only); null when not analyzed. */
   readonly largeFiles: number | null;
@@ -137,12 +138,14 @@ type FileOutcome =
 
 /**
  * Deep-analyzes the checked-out TypeScript sources of one repository: every
- * non-declaration file is read once, measured (LOC), classified as
+ * non-declaration file is read whole once, measured (LOC), classified as
  * generated when its header says so (on top of the path role), and — when
  * its text mentions `effect` at all, a necessary condition for any Effect
- * module specifier — parsed for imports and symbol usages. Only the compact
- * per-file result is kept, never the file contents, so memory stays bounded
- * by the concurrency, not by the size of the repository.
+ * module specifier — parsed for imports and symbol usages. Each file's
+ * contents are dropped once it is processed (eight files in flight at a
+ * time), but the per-file rows are accumulated for the whole repository,
+ * so peak memory grows with the repository's per-file results, not with
+ * the read concurrency alone.
  */
 export const analyzeSources = (
   cloneDir: string,

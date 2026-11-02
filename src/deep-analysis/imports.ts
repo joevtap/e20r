@@ -118,10 +118,7 @@ const row = (
   };
 };
 
-/**
- * Every Effect import of one source file, ordered by line. Absence of Effect
- * imports is an empty list.
- */
+/** Every Effect import of one source file, ordered by line. */
 export const scanEffectImports = (source: string): ReadonlyArray<EffectImport> => {
   const rows: Array<EffectImport> = [];
   const lineOf = makeLineIndex(source);

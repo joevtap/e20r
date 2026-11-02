@@ -48,18 +48,20 @@ were in flight are processed again.
    - a **blobless shallow clone**: trees only, no file contents;
    - the **tree listing**: the file inventory, lockfiles and manifests,
      still without downloading any file;
-   - a **selection checkout** of the `package.json` files only. A repository
-     is an **adopter** when some manifest declares `effect` in
+   - a **selection checkout** of the `package.json` files and the root
+     `pnpm-workspace.yaml` (catalog lookups). A repository is an
+     **adopter** when some manifest declares `effect` in
      `dependencies` or `optionalDependencies` (a `catalog:` reference
      counts). Dev-only and peer-only usage is recorded but not counted;
    - **exclusion**: repositories owned by the Effect-TS org, listed in
      `EXCLUDE_REPOS`, or that define `effect` / `@effect/*` packages in
      their own tree (copies of Effect) are recorded as `excluded`;
-   - an **analysis checkout** of the TypeScript sources only, for the
-     remaining adopters, then the **deep analysis**. Every file is read
-     once and measured (LOC). Files that import Effect are parsed with
-     [oxc](https://oxc.rs), and their imports and symbol usages are counted,
-     with aliases resolved (`Effect as E; E.gen()` counts as `Effect.gen`);
+   - an **analysis checkout** of the TypeScript sources (plus the
+     selection files), for the remaining adopters, then the
+     **deep analysis**. Every file is read once and measured (LOC), and
+     every file whose text mentions `effect` at all is parsed with
+     [oxc](https://oxc.rs); its imports and symbol usages are counted, with
+     aliases resolved (`Effect as E; E.gen()` counts as `Effect.gen`);
    - **one transaction** commits everything the repository contributes,
      then the work directory is deleted.
 
@@ -174,7 +176,7 @@ repositories, so pick the role you report on deliberately.
 ## Viewer
 
 `e20r view` opens the database read-only, so it can stay open during a
-run and refresh live. It has four views:
+run and refresh live. It has five views:
 - **Overview**: the adoption funnel, adoption by popularity, how `effect`
   is declared, major versions, adoption depth, usage by file role, and the
   top packages and symbols;
@@ -185,8 +187,8 @@ run and refresh live. It has four views:
   symbol used, with a CSV export (one line per file × symbol);
 - **Data**, the raw tables.
 
-One filter row (status, stars, code role, symbol position) scopes all of
-them. See [`viewer/README.md`](viewer/README.md).
+One filter row (repository, status, stars, code role, symbol position)
+scopes all of them. See [`viewer/README.md`](viewer/README.md).
 
 ## Development
 

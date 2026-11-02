@@ -47,6 +47,7 @@ export const networkStages: ReadonlySet<string> = new Set([
   "checkout-sources",
 ]);
 
+/** What the breaker did when a network failure hit the streak threshold: cool down, or stop the run. */
 export type BreakerEvent =
   | { readonly _tag: "pause"; readonly millis: number; readonly trip: number }
   | { readonly _tag: "halt" };

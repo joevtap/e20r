@@ -80,6 +80,7 @@ export interface RepoFailure {
   readonly timings: Readonly<Record<string, number>>;
 }
 
+/** The counts of the `v_population` view: `processed` counts every repository with a recorded state, `probed` the same minus `failed`. */
 export interface Population {
   readonly processed: number;
   readonly probed: number;
@@ -144,6 +145,7 @@ export const strongestField = (fields: ReadonlyArray<DependencyField>): Dependen
     null,
   );
 
+/** The child tables keyed by `repo_id`, wiped on every commit so a re-processed repository leaves no stale rows. */
 const childTables = [
   "manifest_deps",
   "catalog_versions",
