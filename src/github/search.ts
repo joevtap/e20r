@@ -6,6 +6,12 @@ import {
   HttpClientRequest,
   HttpClientResponse,
 } from "effect/http";
+import {
+  defaultAcceptedLicenses,
+  parseAcceptedLicenses,
+  populationPolicy,
+  isEligibleRepository,
+} from "../domain/license-policy.ts";
 import { GithubRepoSearchResponseSchema } from "../domain/github.ts";
 import { Store, type CrawlCursor, type CrawlState } from "../store/store.ts";
 
@@ -30,23 +36,14 @@ const parseNextLink = (header: string): Option.Option<string> =>
     Option.flatMap((link) => Option.fromUndefinedOr(/<([^>]+)>/.exec(link)?.[1])),
   );
 
-const buildSearchUrl = (maxStars: number | null): string =>
+export const buildSearchUrl = (maxStars: number | null, licenses: ReadonlyArray<string>): string =>
   `https://api.github.com/search/repositories?${new URLSearchParams({
-    q:
-      maxStars === null
-        ? "language:typescript fork:false archived:false"
-        : `language:typescript fork:false archived:false stars:<=${maxStars}`,
+    q: `language:typescript fork:false archived:false is:public ${licenses.map((id) => `license:${id.toLowerCase()}`).join(" ")}${maxStars === null ? "" : ` stars:<=${maxStars}`}`,
     sort: "stars",
     order: "desc",
     per_page: "100",
     page: "1",
   })}`;
-
-const initialCursor: CrawlCursor = {
-  url: buildSearchUrl(null),
-  lastSeenStars: null,
-  intervalBound: null,
-};
 
 /**
  * How long to wait after a rate-limited (403 / 429) search response, in the
@@ -114,6 +111,7 @@ const nextCursor = (
   cursor: CrawlCursor,
   nextPageUrl: Option.Option<string>,
   lastSeenStars: number | null,
+  licenses: ReadonlyArray<string>,
 ): CrawlCursor | null => {
   if (Option.isSome(nextPageUrl)) {
     return { url: nextPageUrl.value, lastSeenStars, intervalBound: cursor.intervalBound };
@@ -127,8 +125,8 @@ const nextCursor = (
       : lastSeenStars < cursor.intervalBound
         ? lastSeenStars
         : lastSeenStars - 1;
-  return bound >= 1
-    ? { url: buildSearchUrl(bound), lastSeenStars: null, intervalBound: bound }
+  return bound >= 0
+    ? { url: buildSearchUrl(bound, licenses), lastSeenStars: null, intervalBound: bound }
     : null;
 };
 
@@ -136,6 +134,7 @@ export interface CrawlOptions {
   readonly budget: number;
   readonly apiKey: Redacted.Redacted<string>;
   readonly recrawl: boolean;
+  readonly acceptedLicenses?: string;
 }
 
 /** The tally of one `runCrawl` (`skipped`: the crawl was already complete for at least this budget). */
@@ -155,20 +154,38 @@ export const runCrawl = (options: CrawlOptions) =>
   Effect.gen(function* () {
     const store = yield* Store;
 
-    if (options.recrawl) yield* store.resetCrawl;
+    const licenses = parseAcceptedLicenses(options.acceptedLicenses ?? defaultAcceptedLicenses);
+    yield* store.ensurePopulationPolicy(populationPolicy(licenses));
+    if (options.recrawl) {
+      if ((yield* store.repoCount) > 0) {
+        return yield* Effect.fail(
+          "--recrawl cannot reuse a populated cache; use a new --cache-path to preserve the previous snapshot",
+        );
+      }
+      yield* store.resetCrawl;
+    }
 
     const state = yield* store.crawlState;
     const already = yield* store.repoCount;
 
+    if (Option.isSome(state) && state.value.cursor === null && already < options.budget) {
+      return yield* Effect.fail(
+        `Eligible population exhausted: ${already} repositories, fewer than requested ${options.budget}`,
+      );
+    }
     if (Option.isSome(state) && state.value.complete && state.value.budget >= options.budget) {
       yield* Effect.log(
-        `Crawl already complete for a budget of ${state.value.budget} (${already} repositories); skipped (--recrawl to redo)`,
+        `Crawl already complete for a budget of ${state.value.budget} (${already} repositories); skipped (use a new --cache-path for a new snapshot)`,
       );
       return { pages: 0, newRepos: 0, totalRepos: already, skipped: true } satisfies CrawlSummary;
     }
 
     let cursor: CrawlCursor | null = Option.match(state, {
-      onNone: () => initialCursor,
+      onNone: () => ({
+        url: buildSearchUrl(null, licenses),
+        lastSeenStars: null,
+        intervalBound: null,
+      }),
       onSome: (s) => s.cursor,
     });
     let pages = Option.match(state, { onNone: () => 0, onSome: (s) => s.pages });
@@ -221,6 +238,11 @@ export const runCrawl = (options: CrawlOptions) =>
       const body = yield* HttpClientResponse.schemaBodyJson(GithubRepoSearchResponseSchema)(
         response,
       );
+      if (body.incompleteResults) {
+        return yield* Effect.fail(
+          "GitHub returned incomplete_results; refusing to certify the population; retry this page later",
+        );
+      }
       pages++;
 
       if (current.lastSeenStars === null) {
@@ -233,14 +255,25 @@ export const runCrawl = (options: CrawlOptions) =>
         Option.map(Array.last(body.items), (repo) => repo.stargazersCount),
         () => current.lastSeenStars,
       );
-      cursor = nextCursor(
-        current,
-        Headers.get(response.headers, "link").pipe(Option.flatMap(parseNextLink)),
-        lastSeenStars,
-      );
+      const nextPage = Headers.get(response.headers, "link").pipe(Option.flatMap(parseNextLink));
+      // Never step below an unenumerated tie at the API's result cap.
+      if (
+        Option.isNone(nextPage) &&
+        body.totalCount > 1000 &&
+        current.intervalBound !== null &&
+        lastSeenStars === current.intervalBound
+      ) {
+        return yield* Effect.fail(
+          `Star boundary ${current.intervalBound} exceeds GitHub's 1000-result cap; partitioning is required before completing this crawl`,
+        );
+      }
+      cursor = nextCursor(current, nextPage, lastSeenStars, licenses);
 
       const pageState: CrawlState = { cursor, complete: false, budget: options.budget, pages };
-      newRepos += yield* store.saveCrawlPage(body.items, pageState);
+      newRepos += yield* store.saveCrawlPage(
+        body.items.filter((repo) => isEligibleRepository(repo, licenses)),
+        pageState,
+      );
 
       const total = yield* store.repoCount;
       const cutOff = yield* store.starsAtRank(options.budget);
@@ -257,6 +290,11 @@ export const runCrawl = (options: CrawlOptions) =>
     }
 
     const totalRepos = yield* store.repoCount;
+    if (totalRepos < options.budget) {
+      return yield* Effect.fail(
+        `Eligible population exhausted: ${totalRepos} repositories, fewer than requested ${options.budget}`,
+      );
+    }
     yield* Effect.log(
       `Crawl complete: ${pages} pages, ${newRepos} new, ${totalRepos} repositories cached`,
     );

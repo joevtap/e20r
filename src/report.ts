@@ -57,6 +57,7 @@ export const printReport = Effect.gen(function* () {
 });
 
 const tables = [
+  "population_policy",
   "repos",
   "repo_state",
   "manifest_deps",

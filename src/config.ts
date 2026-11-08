@@ -1,3 +1,4 @@
+import { defaultAcceptedLicenses, parseAcceptedLicenses } from "./domain/license-policy.ts";
 import { Config, ConfigProvider, Context, Effect, Layer, Option, Schema } from "effect";
 
 /**
@@ -28,6 +29,17 @@ const int = (min: number, max: number) =>
 const settings = {
   /** Number of top TypeScript repositories to process (sane upper bound: 30k). */
   repoSearchBudget: int(1, 30_000),
+  /** Exact SPDX identifiers; comma-separated subset of the supported policy. */
+  acceptedLicenses: Schema.String.check(
+    Schema.makeFilter((value) => {
+      try {
+        parseAcceptedLicenses(value);
+        return true;
+      } catch {
+        return "ACCEPTED_LICENSES must be a nonempty comma-separated subset of the eight supported SPDX identifiers";
+      }
+    }),
+  ),
   /** Directory holding the state database and the work directory. */
   cachePath: Schema.String.check(Schema.isNonEmpty({ message: "CACHE_PATH must not be empty" })),
   /** In-memory database and a temporary work directory: nothing survives the run. */
@@ -69,10 +81,13 @@ const SettingsTypeSchema = Schema.toType(SettingsSchema);
 
 export type Settings = Schema.Schema.Type<typeof SettingsSchema>;
 
-const AppConfigSchema = Schema.Struct({
+export const AppConfigSchema = Schema.Struct({
   githubApiKey: Schema.optionalKey(GithubApiKeySchema),
   repoSearchBudget: settings.repoSearchBudget.pipe(
     Schema.withDecodingDefaultKey(Effect.succeed("5000")),
+  ),
+  acceptedLicenses: settings.acceptedLicenses.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(defaultAcceptedLicenses)),
   ),
   cachePath: settings.cachePath.pipe(Schema.withDecodingDefaultKey(Effect.succeed(".e20r"))),
   noCache: settings.noCache.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),

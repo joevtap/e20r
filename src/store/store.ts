@@ -93,6 +93,8 @@ export interface Population {
 }
 
 export interface StoreService {
+  /** Bind an empty cache, or reject legacy/different populations without deleting data. */
+  readonly ensurePopulationPolicy: (policy: string) => Effect.Effect<void, SqlError | string>;
   readonly crawlState: Effect.Effect<Option.Option<CrawlState>, SqlError>;
   /**
    * Upserts one crawled page and advances the cursor in the same
@@ -105,6 +107,7 @@ export interface StoreService {
   ) => Effect.Effect<number, SqlError>;
   readonly setCrawlState: (state: CrawlState) => Effect.Effect<void, SqlError>;
   readonly resetCrawl: Effect.Effect<void, SqlError>;
+  readonly requireCompletePopulation: (budget: number) => Effect.Effect<void, SqlError | string>;
   /** Stars of the repository at the given 1-based rank, if that many are crawled. */
   readonly starsAtRank: (rank: number) => Effect.Effect<number | undefined, SqlError>;
   readonly repoCount: Effect.Effect<number, SqlError>;
@@ -391,10 +394,46 @@ export const StoreLayer = Layer.effect(
       });
 
     return {
+      ensurePopulationPolicy: (policy) =>
+        Effect.gen(function* () {
+          const rows = yield* sql<{
+            policy: string;
+          }>`SELECT policy FROM population_policy WHERE id = 1`;
+          if (rows[0] !== undefined) {
+            if (rows[0].policy !== policy)
+              return yield* Effect.fail(
+                "Population policy differs from this cache; use a new --cache-path",
+              );
+            return;
+          }
+          const old = yield* sql<{ count: number }>`SELECT
+          (SELECT count(*) FROM repos) + (SELECT count(*) FROM crawl_state) +
+          (SELECT count(*) FROM repo_state) AS count`;
+          if ((old[0]?.count ?? 0) > 0)
+            return yield* Effect.fail(
+              "Legacy cache has no population policy; use a new --cache-path",
+            );
+          yield* sql`INSERT INTO population_policy (id, policy) VALUES (1, ${policy})`;
+        }).pipe(sql.withTransaction),
       crawlState,
       saveCrawlPage,
       setCrawlState,
       resetCrawl: Effect.asVoid(sql`DELETE FROM crawl_state`),
+      requireCompletePopulation: (budget) =>
+        Effect.gen(function* () {
+          const state = yield* crawlState;
+          const rows = yield* sql<{ count: number }>`SELECT count(*) AS count FROM repos`;
+          if (
+            Option.isNone(state) ||
+            !state.value.complete ||
+            state.value.budget < budget ||
+            (rows[0]?.count ?? 0) < budget
+          ) {
+            return yield* Effect.fail(
+              "Population is not complete for this budget; finish crawl before processing",
+            );
+          }
+        }),
       starsAtRank: (rank) =>
         Effect.map(
           sql<{ stars: number }>`SELECT stars FROM repos

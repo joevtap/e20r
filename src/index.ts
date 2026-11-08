@@ -1,3 +1,4 @@
+import { parseAcceptedLicenses, populationPolicy } from "./domain/license-policy.ts";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import { Context, Effect, FileSystem, Layer, Option, Path } from "effect";
 import { Command, Flag } from "effect/cli";
@@ -26,6 +27,11 @@ const flag = {
     Flag.withDescription("Number of top TypeScript repositories to process"),
     Flag.optional,
   ),
+  acceptedLicenses: Flag.String("accepted-licenses").pipe(
+    Flag.withDescription("Comma-separated exact SPDX identifiers accepted before ranking"),
+    Flag.optional,
+  ),
+  excludeEffectCopies: Flag.Boolean("exclude-effect-copies").pipe(Flag.optional),
   cachePath: Flag.String("cache-path").pipe(
     Flag.withDescription("Directory holding the state database (e20r.db) and the work directory"),
     Flag.optional,
@@ -41,7 +47,7 @@ const flag = {
     Flag.optional,
   ),
   recrawl: Flag.Boolean("recrawl").pipe(
-    Flag.withDescription("Discard the crawl cursor and crawl again from the top"),
+    Flag.withDescription("Restart an empty cache crawl; populated caches require a new cache path"),
     Flag.optional,
   ),
   concurrency: Flag.Int("concurrency").pipe(
@@ -84,8 +90,14 @@ const flag = {
 };
 
 const storageFlags = { cachePath: flag.cachePath, clean: flag.clean };
-const crawlFlags = { repoSearchBudget: flag.repoSearchBudget, recrawl: flag.recrawl };
+const crawlFlags = {
+  repoSearchBudget: flag.repoSearchBudget,
+  acceptedLicenses: flag.acceptedLicenses,
+  recrawl: flag.recrawl,
+};
 const processFlags = {
+  acceptedLicenses: flag.acceptedLicenses,
+  excludeEffectCopies: flag.excludeEffectCopies,
   repoSearchBudget: flag.repoSearchBudget,
   concurrency: flag.concurrency,
   fresh: flag.fresh,
@@ -193,6 +205,7 @@ const crawlStep = Effect.gen(function* () {
     budget: config.repoSearchBudget,
     apiKey: config.githubApiKey,
     recrawl: config.recrawl,
+    acceptedLicenses: config.acceptedLicenses,
   });
 });
 
@@ -201,6 +214,7 @@ const processStep = (runId: number) =>
     const config = yield* AppConfig;
     const paths = yield* Paths;
     const store = yield* Store;
+    yield* store.requireCompletePopulation(config.repoSearchBudget);
     if (config.retryFailed) {
       const reset = yield* store.resetFailures;
       if (reset > 0) yield* Effect.log(`--retry-failed: ${reset} failed repositories re-queued`);
@@ -242,6 +256,10 @@ const processStep = (runId: number) =>
 const recordedRun = <A, E, R>(command: string, body: (runId: number) => Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
     const store = yield* Store;
+    const config = yield* AppConfig;
+    yield* store.ensurePopulationPolicy(
+      populationPolicy(parseAcceptedLicenses(config.acceptedLicenses)),
+    );
     const runId = yield* store.startRun(command, yield* recordedConfig);
     const counts = yield* body(runId);
     const summary = makeRunSummary(yield* store.population);

@@ -260,4 +260,7 @@ export const migrations = {
   "0001_initial": run(initial),
   "0002_generated_role": run(generatedRole),
   "0003_file_indexes": run(fileIndexes),
+  "0004_population_policy": run([
+    `CREATE TABLE population_policy (id INTEGER PRIMARY KEY CHECK (id = 1), policy TEXT NOT NULL)`,
+  ]),
 };

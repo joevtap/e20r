@@ -44,15 +44,31 @@ shutdown; see the [stop/resume procedure](docs/operations.md#after-stop-verify-a
 ## How it works
 
 1. **Crawl.** GitHub search for `language:typescript fork:false
-   archived:false`, sorted by stars. Search caps a query at 1,000 results,
-   so the crawl walks star intervals (`stars:<=N`). It stops once it holds
-   `REPO_SEARCH_BUDGET` repositories and has passed the star count at that
-   rank, so ties at the cut-off are all included. Requests are paced
-   evenly, one every 6 seconds: the documented search quota is 30 a minute,
-   but GitHub's secondary limit refuses sorted repository searches at 15 a
-   minute, and each refusal costs a one-minute wait. Each page is committed
-   together with the cursor of the next one, so the crawl can be resumed,
-   and a completed crawl is not repeated.
+   archived:false is:public` plus the union of configured `license:` qualifiers,
+   sorted by stars. Every returned repository is checked locally for public
+   TypeScript, non-fork, non-archived metadata and an **exact** accepted SPDX
+   identifier before storage, counting or ranking. Defaults: `MIT`, `Apache-2.0`,
+   `AGPL-3.0`, `GPL-3.0`, `LGPL-3.0`, `MPL-2.0`, `BSL-1.0`, `Unlicense`.
+   Missing licenses, null SPDX, `NOASSERTION`, SPDX expressions and other
+   identifiers (including `-only` / `-or-later` variants) are excluded.
+   Search caps a query at 1,000 results, so the crawl walks overlapping star
+   intervals (`stars:<=N`), deduplicating IDs. It continues until it holds
+   `REPO_SEARCH_BUDGET` **eligible** repositories and has passed the star count
+   at that rank. All observed boundary ties participate in the final SQLite
+   ranking: **stars DESC, forks DESC, full_name ASC**, then the budget limit.
+   An incomplete API response or a saturated single-star boundary fails
+   explicitly without advancing that page; it requires retry or additional
+   partitioning, never silent completion. Exhaustion below the requested
+   budget also fails before automatic processing. This is a ranking over
+   metadata returned during collection, not a global instantaneous snapshot.
+   Requests are paced one every 6 seconds. Each accepted page is committed
+   with its next cursor for resume. A completed compatible crawl is skipped.
+   The canonical SPDX set and selection version are persisted in
+   `population_policy`; legacy populated caches or a different policy are
+   refused. Use a **new cache path** for those cases or a new snapshot;
+   `--recrawl` is refused on a populated cache to preserve old results.
+   Standalone `process` requires a completed crawl certified for its budget
+   and enough eligible repositories before it resets failures or work files.
 2. **Process** each of the top-N repositories, `CONCURRENCY` at a time, in
    its own throwaway work directory:
    - a **blobless shallow clone**: trees only, no file contents;
@@ -104,7 +120,7 @@ logs. See the [resource model and tuning guidance](docs/operations.md#resource-m
 | Command | What it does |
 | --- | --- |
 | `e20r run` | `crawl`, then `process` |
-| `e20r crawl` | Crawl only (resumable); `--recrawl` starts over |
+| `e20r crawl` | Crawl only (resumable); a new snapshot requires a new cache path |
 | `e20r process` | Process the crawled top-N repositories that need work |
 | `e20r report` | Print the population summary, top packages and symbols, failures |
 | `e20r view` | Serve the read-only viewer over the database (`--port`, `--host`) |
@@ -122,7 +138,9 @@ Flags that change this:
 
 | Flag | Effect |
 | --- | --- |
-| `-b, --repo-search-budget` | Number of top repositories to crawl and process |
+| `-b, --repo-search-budget` | Number of top eligible repositories to crawl and process |
+| `--accepted-licenses` | Comma-separated exact SPDX subset of the eight supported identifiers |
+| `--exclude-effect-copies` | Override the Effect-copy exclusion setting |
 | `-c, --concurrency` | Repositories processed in parallel |
 | `--fresh` | Re-process every repository, whatever its state |
 | `--reanalyze` | Re-process adopters recorded by an older analyzer version |
@@ -139,7 +157,8 @@ Flags that change this:
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `GITHUB_API_KEY` | (none) | Required for crawling; also authenticates clones (see below) |
-| `REPO_SEARCH_BUDGET` | `5000` | Top repositories to process (up to 30,000) |
+| `REPO_SEARCH_BUDGET` | `5000` | Top eligible repositories to process (up to 30,000) |
+| `ACCEPTED_LICENSES` | `MIT,Apache-2.0,AGPL-3.0,GPL-3.0,LGPL-3.0,MPL-2.0,BSL-1.0,Unlicense` | Exact SPDX subset; empty or unknown entries fail; order and duplicates do not change policy |
 | `CACHE_PATH` | `.e20r` | Database and work directory |
 | `CONCURRENCY` | `4` | Repositories in parallel (1–16); choose from measured host headroom and whole-process-tree usage |
 | `MAX_ATTEMPTS` | `3` | Attempts before a failing repository is given up on |
@@ -160,6 +179,15 @@ shell does not configure this provider. For a defaults run, use a private
 credential-only `.env`, an absolute cache path and explicit concurrency as
 shown in the [operating guide](docs/operations.md#before-prepare-an-isolated-run).
 
+Boolean flags support `--no-<name>` to override a true `.env` value with
+false, including `--no-clean`, `--no-fresh`, `--no-recrawl`,
+`--no-retry-failed`, `--no-reanalyze`, `--no-skip-analysis`,
+`--no-keep-clones`, `--no-exclude-effect-copies` and `--no-no-cache`.
+For a new default licensed run, pin `--repo-search-budget 5000` and
+`--accepted-licenses MIT,Apache-2.0,AGPL-3.0,GPL-3.0,LGPL-3.0,MPL-2.0,BSL-1.0,Unlicense`
+with an isolated cache. This policy applies to new runs; it does not establish
+license eligibility for historical collections.
+
 **GitHub throttling.** GitHub rate-limits git traffic per IP, and anonymous
 clones hit that limit after a few thousand (every clone then fails with
 `could not read Username … terminal prompts disabled`). With
@@ -179,6 +207,7 @@ re-processed.
 
 | Table | Grain |
 | --- | --- |
+| `population_policy` | Canonical accepted SPDX set and selection version for cache compatibility |
 | `repos` | Crawled repository: stars, forks, owner, license, topics, dates, raw payload |
 | `repo_state` | Pipeline state: `status`, adopter, commit, exclusion reason, error and attempts, analyzer version, stage timings |
 | `manifest_deps` | Every `effect` / `@effect/*` dependency: manifest × package × field × specifier |

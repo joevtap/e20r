@@ -119,7 +119,14 @@ allows all other settings to default. Shell exports do not set the
 application's options, including the GitHub token.
 
 Copying `.env.example` selects budget **1,200**, whereas omitting that key
-selects the code default **5,000**. The other normal defaults are concurrency
+selects the code default **5,000**. The default `ACCEPTED_LICENSES` is `MIT,Apache-2.0,AGPL-3.0,GPL-3.0,LGPL-3.0,MPL-2.0,BSL-1.0,Unlicense`, checked as exact SPDX metadata before the budget.
+`--accepted-licenses` overrides the comma-separated `.env` list; an empty or
+unsupported identifier fails. The canonical set and selection version are
+persisted in `population_policy`. Use a new cache for legacy data, a different
+set or a new snapshot; `--recrawl` refuses populated caches. These rules do
+not retroactively certify historical runs.
+
+The other normal defaults are concurrency
 4, attempts 3, parse threshold 1,000,000, no extra exclusions, Effect copies
 excluded, and all opt-in booleans false (`noCache`, `clean`, `fresh`,
 `retryFailed`, `reanalyze`, `skipAnalysis`, `recrawl`, `keepClones`). Default
@@ -253,8 +260,20 @@ while :; do
 done
 ```
 
+Boolean flags support their `--no-<name>` forms (including `--no-no-cache`)
+to force false over `.env`; `--exclude-effect-copies` forces that setting true.
+For controlled runs explicitly pin all relevant flags, including the budget
+and accepted licenses, rather than assuming shell exports take effect.
+
 Crawl pages are paced at 6 seconds per request and may wait on 403/429
-responses. Processing logs each completed repository and emits a rollup
+responses. An `incomplete_results` response or a star tie exceeding the API's 1,000
+result cap aborts before advancing the affected page. Retry incomplete
+responses later; saturated ties require further partitioning, not a forced
+resume past the boundary. Exhaustion below budget aborts before automatic
+processing. Standalone `process` also requires a completed crawl certified
+for the requested budget and enough eligible repositories.
+
+Processing logs each completed repository and emits a rollup
 after a completion when at least 30 seconds elapsed. No rollup during a
 long clone or analysis does not prove a hang. Track completed successes
 separately from failures and crawl pages. Git steps have individual timeouts
